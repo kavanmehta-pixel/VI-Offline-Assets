@@ -50,6 +50,12 @@ def init_db():
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS report_files(
+            week TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            data BLOB NOT NULL,
+            size INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS snapshots(
             asset TEXT NOT NULL,
             week TEXT NOT NULL,
@@ -145,10 +151,17 @@ def state():
 def ingest():
     p = request.get_json(force=True)
     week, rows = p.get("reportDate"), p.get("assets", [])
+    file_b64 = p.get("fileBase64")
+    file_name = p.get("fileName", "")
     if not week or not rows:
         return jsonify({"error": "reportDate and assets required"}), 400
     d = db()
     d.execute("INSERT OR REPLACE INTO weeks(week, uploaded_at) VALUES(?,?)", (week, now()))
+    if file_b64:
+        import base64
+        raw = base64.b64decode(file_b64)
+        d.execute("INSERT OR REPLACE INTO report_files(week, filename, data, size) VALUES(?,?,?,?)",
+                  (week, file_name, raw, len(raw)))
     reappeared = []
     for a in rows:
         aid = a.get("id")
@@ -227,6 +240,31 @@ def import_state():
                       (aid, c.get("ts") or now(), c.get("text") or ""))
     d.commit()
     return jsonify({"ok": True})
+
+
+@app.get("/api/reports")
+@require_auth
+def list_reports():
+    d = db()
+    rows = d.execute(
+        "SELECT r.week, r.filename, r.size, w.uploaded_at "
+        "FROM report_files r JOIN weeks w ON r.week=w.week ORDER BY r.week DESC"
+    ).fetchall()
+    return jsonify([{"week": r["week"], "filename": r["filename"],
+                     "size": r["size"], "uploadedAt": r["uploaded_at"]} for r in rows])
+
+
+@app.get("/api/reports/<week>/download")
+@require_auth
+def download_report(week):
+    d = db()
+    r = d.execute("SELECT filename, data FROM report_files WHERE week=?", (week,)).fetchone()
+    if not r:
+        return jsonify({"error": "not found"}), 404
+    from flask import Response
+    resp = Response(r["data"], mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{r["filename"]}"'
+    return resp
 
 
 init_db()

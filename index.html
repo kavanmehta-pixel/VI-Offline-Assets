@@ -154,6 +154,15 @@ tr.asset{cursor:pointer}
 .drop .btn2{background:var(--slate);color:#fff;border:none;padding:11px 22px;font-weight:700;font-size:13px;border-radius:3px}
 .drop .fmt{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:14px}
 
+.rpt-row{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid #EFF1ED;gap:14px}
+.rpt-row:last-child{border-bottom:none}
+.rpt-row:hover{background:#F7F8F5}
+.rpt-wk{font-family:var(--mono);font-weight:600;font-size:13px;min-width:90px}
+.rpt-fn{font-size:12px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rpt-sz{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:60px;text-align:right}
+.rpt-dl{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;font-weight:700;padding:5px 12px;border-radius:3px;text-decoration:none;white-space:nowrap}
+.rpt-dl:hover{border-color:var(--slate);background:var(--slate);color:#fff}
+.rpt-cur{background:var(--green-bg);font-size:9px;font-weight:800;letter-spacing:.08em;color:var(--green);padding:2px 6px;border-radius:2px}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--slate);color:#fff;padding:11px 20px;border-radius:4px;font-size:13px;font-weight:600;transition:transform .2s;z-index:60}
 .toast.on{transform:translateX(-50%) translateY(0)}
 input[type=file]{display:none}
@@ -189,6 +198,7 @@ input[type=file]{display:none}
     <button data-v="all">All offline <span class="count" id="cAll">0</span></button>
     <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
     <button data-v="trends">Trends</button>
+    <button data-v="reports">Reports</button>
   </div>
 </div>
 
@@ -252,8 +262,10 @@ function parseReport(data){
   return {reportDate, assets};
 }
 
-async function ingest(reportDate, assets){
-  const res = await api('ingest', {reportDate, assets});
+async function ingest(reportDate, assets, fileBase64, fileName){
+  const payload = {reportDate, assets};
+  if(fileBase64) { payload.fileBase64 = fileBase64; payload.fileName = fileName; }
+  const res = await api('ingest', payload);
   await refresh();
   return res.reappeared || [];
 }
@@ -366,6 +378,7 @@ function render(){
   else if(view==='all') renderTable(branchFilter? A.filter(r=>r.snap.branch===branchFilter) : A, branchFilter||'All offline cameras', false);
   else if(view==='repaired') renderRepaired(fixed);
   else if(view==='trends') renderTrends();
+  else if(view==='reports') renderReports();
 }
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
 function wowDelta(){
@@ -582,6 +595,24 @@ function trendChart(series){
   </svg>`;
 }
 
+async function renderReports(){
+  try{
+    const reps = await (await fetch('/api/reports')).json();
+    const cur = S.currentWeek;
+    $('#main').innerHTML = `<div class="card">
+      <h2>Uploaded reports &mdash; source files</h2>
+      ${reps.length? reps.map(r=>`
+        <div class="rpt-row">
+          <span class="rpt-wk">${esc(r.week)}${r.week===cur?' <span class="rpt-cur">CURRENT</span>':''}</span>
+          <span class="rpt-fn">${esc(r.filename)}</span>
+          <span class="rpt-sz">${(r.size/1024).toFixed(0)} KB</span>
+          <a class="rpt-dl" href="/api/reports/${encodeURIComponent(r.week)}/download">&#8681; Download</a>
+        </div>`).join('') : '<div style="padding:30px;text-align:center;color:var(--muted)">No source files stored yet. Re-upload your reports after this update and the xlsx files will be archived here.</div>'}
+    </div>
+    <div class="foot-note">Source files are stored server-side and downloadable by anyone with access to this board. Re-upload historical reports to backfill.</div>`;
+  }catch(e){ $('#main').innerHTML='<div class="card" style="padding:30px;color:var(--red)">Failed to load reports: '+esc(e.message)+'</div>'; }
+}
+
 /* ================= drawer ================= */
 let drawerId=null;
 function openDrawer(id){
@@ -659,7 +690,9 @@ function handleFile(f){
     try{
       const {reportDate, assets}=parseReport(new Uint8Array(e.target.result));
       toast('Uploading '+assets.length+' cameras…');
-      const rep=await ingest(reportDate, assets);
+      // base64-encode raw file for server storage
+      const b64 = btoa(new Uint8Array(e.target.result).reduce((s,b)=>s+String.fromCharCode(b),''));
+      const rep=await ingest(reportDate, assets, b64, f.name);
       branchFilter=null;
       const historical = S.currentWeek && reportDate < S.currentWeek;
       if(!historical) view='overview';
