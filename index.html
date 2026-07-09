@@ -126,6 +126,26 @@ tr.asset{cursor:pointer}
 .dw-foot .fixbtn{flex:1;padding:10px;font-size:13px}
 .dw-foot .save{flex:1;border:1px solid var(--slate);background:var(--slate);color:#fff;font-weight:700;font-size:13px;border-radius:3px}
 
+/* trends */
+.mcards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:900px){.mcards{grid-template-columns:repeat(2,1fr)}}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:14px 16px;cursor:pointer;border-top:3px solid var(--line)}
+.mcard:hover{background:#FBFCFA}
+.mcard.on{outline:2px solid var(--slate)}
+.mcard .n{font-size:30px;font-weight:900;line-height:1.1}
+.mcard .l{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:2px}
+.mcard .s{font-size:11px;color:var(--muted);margin-top:4px}
+.mcard.in{border-top-color:var(--red)}
+.mcard.ret{border-top-color:var(--amber)}
+.mcard.car{border-top-color:var(--slate)}
+.mcard.clr{border-top-color:var(--green)}
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start;margin-top:18px}
+@media(max-width:1000px){.tgrid{grid-template-columns:1fr}}
+.dotrow{display:flex;gap:3px;align-items:center;flex-wrap:wrap}
+.wdot{width:10px;height:10px;border-radius:2px;background:#E3E6E0;border:1px solid var(--line)}
+.wdot.on{background:var(--red);border-color:var(--red)}
+.wdot.fx{background:var(--green);border-color:var(--green)}
+.trend-arrow{font-weight:900}
 /* empty / dropzone */
 .drop{border:2px dashed #B9C0B7;border-radius:6px;padding:70px 30px;text-align:center;background:#F5F6F3;margin-top:24px;transition:border-color .12s,background .12s}
 .drop.hot{border-color:var(--slate);background:#ECEFE9}
@@ -168,6 +188,7 @@ input[type=file]{display:none}
     <button data-v="pickles">Pickles <span class="count" id="cPk">0</span></button>
     <button data-v="all">All offline <span class="count" id="cAll">0</span></button>
     <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
+    <button data-v="trends">Trends</button>
   </div>
 </div>
 
@@ -248,6 +269,48 @@ function sev(d){ return d>=90?4 : d>=30?3 : d>=14?2 : 1; }
 function sevClass(d){ return 'd'+sev(d); }
 function fmtDays(d){ return d>=1? d+'d' : '<1d'; }
 
+/* ================= analytics ================= */
+function weeksOrdered(){ return Object.keys(S.weeks).sort(); }
+function memberSet(w){ return new Set((S.weeks[w]&&S.weeks[w].ids)||[]); }
+function movement(){
+  const ws = weeksOrdered(); if(ws.length<1) return null;
+  const W = ws[ws.length-1], P = ws.length>1? ws[ws.length-2] : null;
+  const cur = memberSet(W), prev = P? memberSet(P) : new Set();
+  const firstSeen = {}; ws.forEach(w=>memberSet(w).forEach(id=>{ if(!(id in firstSeen)) firstSeen[id]=w; }));
+  const newIn=[], returned=[], carried=[], cleared=[];
+  cur.forEach(id=>{
+    if(prev.has(id)) carried.push(id);
+    else if(firstSeen[id]===W) newIn.push(id);
+    else returned.push(id);
+  });
+  prev.forEach(id=>{ if(!cur.has(id)) cleared.push(id); });
+  return {W, P, newIn, returned, carried, cleared};
+}
+function streak(rec){
+  const ws = weeksOrdered(); let n=0;
+  const ap = new Set(rec.appearances);
+  for(let i=ws.length-1;i>=0;i--){ if(ap.has(ws[i])) n++; else break; }
+  return n;
+}
+function churn(rec){
+  const ws = weeksOrdered(); const ap=new Set(rec.appearances);
+  let out=0, inside=false;
+  for(const w of ws){ const here=ap.has(w); if(inside && !here) out++; inside=here; }
+  return out; // times it dropped off then (possibly) came back
+}
+function weeklySeries(){
+  const ws = weeksOrdered();
+  return ws.map((w,i)=>{
+    const ids = (S.weeks[w].ids)||[];
+    const prev = i>0? memberSet(ws[i-1]) : null;
+    const cur = new Set(ids);
+    let inn=0, out=0;
+    if(prev){ cur.forEach(id=>{ if(!prev.has(id)) inn++; }); prev.forEach(id=>{ if(!cur.has(id)) out++; }); }
+    const pk = ids.filter(id=>S.assets[id]&&S.assets[id].snap.pickles).length;
+    return {week:w, total:ids.length, pickles:pk, inn, out};
+  });
+}
+
 /* ================= render ================= */
 const $=s=>document.querySelector(s);
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -285,7 +348,7 @@ function render(){
     <div class="t-block" onclick="go('all')">
       <div class="t-label">Total offline &gt;168h</div>
       <div class="t-num">${open.length}</div>
-      <div class="t-sub">${A.length} reported &middot; ${fixed.length} fixed &middot; ${open.length} remaining</div>
+      <div class="t-sub">${A.length} reported &middot; ${fixed.length} fixed &middot; ${open.length} remaining${wowDelta()}</div>
     </div>
     <div class="t-block" onclick="go('all','__longest')">
       <div class="t-label">Longest offline</div>
@@ -302,8 +365,15 @@ function render(){
   else if(view==='pickles') renderTable(pk, 'Pickles cameras', true);
   else if(view==='all') renderTable(branchFilter? A.filter(r=>r.snap.branch===branchFilter) : A, branchFilter||'All offline cameras', false);
   else if(view==='repaired') renderRepaired(fixed);
+  else if(view==='trends') renderTrends();
 }
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
+function wowDelta(){
+  const m = movement(); if(!m||!m.P) return '';
+  const d = (S.weeks[m.W].ids||[]).length - (S.weeks[m.P].ids||[]).length;
+  const col = d>0? '#E58676' : d<0? '#6FBF8E' : '#9FB0BE';
+  return ` &middot; <span style="color:${col}">${d>0?'+':''}${d} vs last wk</span> <span style="color:#7E909E">(+${m.newIn.length+m.returned.length} in / &minus;${m.cleared.length} out)</span>`;
+}
 
 function dropzone(){
   return `<div class="drop" id="dz">
@@ -415,6 +485,103 @@ function renderRepaired(fixed){
     </tbody></table></div>`;
 }
 
+let trendSel = 'newIn';
+function renderTrends(){
+  const m = movement();
+  const ws = weeksOrdered();
+  if(!m || ws.length<2){
+    $('#main').innerHTML = '<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Trends need at least two weekly reports. Upload more history and this tab lights up: in/out movement, chronic cameras, branch trajectories.</div>';
+    return;
+  }
+  const sel = {newIn:m.newIn, returned:m.returned, carried:m.carried, cleared:m.cleared}[trendSel]||[];
+  const series = weeklySeries();
+  // chronic: top by appearances among current-week assets, plus recently cleared chronics
+  const chron = Object.entries(S.assets)
+    .map(([id,r])=>({id, r, n:r.appearances.length, st:streak(r), ch:churn(r)}))
+    .filter(x=>x.n>1).sort((a,b)=>b.n-a.n || b.st-a.st).slice(0,20);
+  // branch matrix over last 8 weeks
+  const last = ws.slice(-8);
+  const brs = {};
+  last.forEach(w=>{ (S.weeks[w].ids||[]).forEach(id=>{ const b=(S.assets[id]||{snap:{}}).snap.branch||'?'; (brs[b]=brs[b]||{})[w]=(brs[b][w]||0)+1; }); });
+  const brRows = Object.entries(brs).map(([b,m2])=>({b, vals:last.map(w=>m2[w]||0)}))
+    .sort((a,b)=>b.vals[b.vals.length-1]-a.vals[a.vals.length-1]);
+
+  $('#main').innerHTML = `
+  <div class="mcards">
+    <div class="mcard in ${trendSel==='newIn'?'on':''}" onclick="trendSel='newIn';render()"><div class="n">${m.newIn.length}</div><div class="l">New this week</div><div class="s">first time on any report</div></div>
+    <div class="mcard ret ${trendSel==='returned'?'on':''}" onclick="trendSel='returned';render()"><div class="n">${m.returned.length}</div><div class="l">Boomerangs</div><div class="s">cleared before, back again — battery suspects</div></div>
+    <div class="mcard car ${trendSel==='carried'?'on':''}" onclick="trendSel='carried';render()"><div class="n">${m.carried.length}</div><div class="l">Carried over</div><div class="s">still down from last report</div></div>
+    <div class="mcard clr ${trendSel==='cleared'?'on':''}" onclick="trendSel='cleared';render()"><div class="n">${m.cleared.length}</div><div class="l">Cleared</div><div class="s">off the report since last week</div></div>
+  </div>
+  <div class="card">
+    <h2>Weekly totals — ${ws.length} reports (${ws[0]} → ${m.W})</h2>
+    <div style="padding:14px 16px">${trendChart(series)}</div>
+  </div>
+  <div class="tgrid">
+    <div class="card">
+      <h2>${({newIn:'New this week',returned:'Boomerangs — cleared then back',carried:'Carried over',cleared:'Cleared since last report'})[trendSel]} (${sel.length})</h2>
+      <table><thead><tr><th>Asset</th><th>Customer</th><th>Branch</th><th>Wks seen</th><th>${trendSel==='cleared'?'Was offline':'Offline'}</th></tr></thead><tbody>
+      ${sel.map(id=>{const r=S.assets[id]; if(!r) return ''; const a=r.snap;
+        return `<tr class="asset" onclick="openDrawer('${a.id}')">
+          <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}</td>
+          <td><span class="cust">${esc(a.customer)}</span></td><td>${esc(a.branch)}</td>
+          <td style="font-family:var(--mono)">${r.appearances.length}</td>
+          <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td></tr>`;}).join('')}
+      ${!sel.length?'<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">None.</td></tr>':''}
+      </tbody></table>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>Chronic cameras — most weeks on report</h2>
+        <table><thead><tr><th>Asset</th><th>Branch</th><th>Wks</th><th>Streak</th><th>Drop-offs</th><th>Timeline</th></tr></thead><tbody>
+        ${chron.map(x=>{const a=x.r.snap; const ap=new Set(x.r.appearances);
+          const dots = ws.slice(-16).map(w=>`<span class="wdot ${ap.has(w)?'on':''}" title="${w}"></span>`).join('');
+          return `<tr class="asset" onclick="openDrawer('${x.id}')">
+            <td><span class="aid">${esc(x.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}</td>
+            <td>${esc(a.branch)}</td>
+            <td style="font-family:var(--mono);font-weight:600">${x.n}</td>
+            <td style="font-family:var(--mono)">${x.st}</td>
+            <td style="font-family:var(--mono)">${x.ch||''}</td>
+            <td><span class="dotrow">${dots}</span></td></tr>`;}).join('')}
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h2>Branches — last ${last.length} reports</h2>
+        <table><thead><tr><th>Branch</th>${last.map(w=>`<th style="text-align:center">${w.slice(5)}</th>`).join('')}<th></th></tr></thead><tbody>
+        ${brRows.map(r=>{
+          const a=r.vals[r.vals.length-1], b=r.vals.length>1? r.vals[r.vals.length-2] : a;
+          const ar = a>b? '<span class="trend-arrow" style="color:var(--red)">&#9650;</span>' : a<b? '<span class="trend-arrow" style="color:var(--green)">&#9660;</span>' : '<span style="color:var(--muted)">&ndash;</span>';
+          return `<tr class="asset" onclick="goBranch('${esc(r.b).replace(/'/g,"\\'")}')"><td style="font-weight:600">${esc(r.b)}</td>${r.vals.map(v=>`<td style="text-align:center;font-family:var(--mono)">${v||'<span style=\'color:#C9CEC6\'>0</span>'}</td>`).join('')}<td>${ar}</td></tr>`;}).join('')}
+        </tbody></table>
+      </div>
+    </div>
+  </div>`;
+}
+function trendChart(series){
+  const W=920,H=190,pad=34,pb=44;
+  const n=series.length, mx=Math.max(...series.map(s=>s.total),1);
+  const x=i=> pad + i*( (W-pad-10) / Math.max(n-1,1) );
+  const y=v=> (H-pb) - v/mx*(H-pb-14);
+  const line=k=> series.map((s,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ');
+  const mxio=Math.max(...series.map(s=>Math.max(s.inn,s.out)),1);
+  const bw=Math.min(14,(W-pad-10)/Math.max(n,1)/3);
+  const bars=series.map((s,i)=>{ if(!i) return '';
+    const bx=x(i);
+    return `<rect x="${bx-bw-1}" y="${H-pb+6}" width="${bw}" height="${(s.inn/mxio*(pb-18)).toFixed(1)}" fill="#C0392B" opacity=".75"><title>${s.week}: +${s.inn} in</title></rect>
+            <rect x="${bx+1}" y="${H-pb+6}" width="${bw}" height="${(s.out/mxio*(pb-18)).toFixed(1)}" fill="#2F7A4D" opacity=".75"><title>${s.week}: &minus;${s.out} out</title></rect>`;}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;font-family:var(--mono)">
+    ${[0,.5,1].map(f=>`<line x1="${pad}" x2="${W-10}" y1="${y(mx*f)}" y2="${y(mx*f)}" stroke="#E5E8E2"/><text x="${pad-6}" y="${y(mx*f)+3}" font-size="10" fill="#8A94A0" text-anchor="end">${Math.round(mx*f)}</text>`).join('')}
+    ${bars}
+    <path d="${line('total')}" fill="none" stroke="#232B33" stroke-width="2.2"/>
+    <path d="${line('pickles')}" fill="none" stroke="#D9A404" stroke-width="2"/>
+    ${series.map((s,i)=>`<circle cx="${x(i)}" cy="${y(s.total)}" r="3" fill="#232B33"><title>${s.week}: ${s.total} offline</title></circle>`).join('')}
+    ${series.map((s,i)=> n<=14 || i%2==0 || i==n-1 ? `<text x="${x(i)}" y="${H-2}" font-size="9.5" fill="#8A94A0" text-anchor="middle">${s.week.slice(5)}</text>`:'').join('')}
+    <text x="${W-10}" y="12" font-size="10" fill="#232B33" text-anchor="end">&#9632; total &nbsp;</text>
+    <text x="${W-10}" y="24" font-size="10" fill="#D9A404" text-anchor="end">&#9632; pickles</text>
+    <text x="${pad}" y="${H-pb+2}" font-size="9" fill="#8A94A0">in/out</text>
+  </svg>`;
+}
+
 /* ================= drawer ================= */
 let drawerId=null;
 function openDrawer(id){
@@ -441,8 +608,11 @@ function openDrawer(id){
         <span class="k">Monitored</span><span class="v">${a.monitored?'Yes':'No'}</span>
         ${a.reachable?`<span class="k">Reliably reachable</span><span class="v">${esc(a.reachable)}</span>`:''}
         ${a.location?`<span class="k">Suitable location</span><span class="v">${esc(a.location)}</span>`:''}
-        <span class="k">Report appearances</span><span class="v">${appearCount(r)} week${appearCount(r)>1?'s':''}</span>
+        <span class="k">Report appearances</span><span class="v">${appearCount(r)} week${appearCount(r)>1?'s':''} &middot; streak ${streak(r)}${churn(r)?` &middot; dropped off &times;${churn(r)}`:''}</span>
       </div>
+      <div class="dw-sec">Weekly presence</div>
+      <div class="dotrow">${weeksOrdered().map(w=>{const on=r.appearances.includes(w); const d=(r.days||{})[w];
+        return `<span class="wdot ${on?'on':''}" title="${w}${on&&d!=null?': '+d+'d offline':''}"></span>`;}).join('')}</div>
       <div class="dw-sec">Add note</div>
       <textarea class="cbox" id="cbox" placeholder="e.g. battery replaced, camera in full shade, client moved unit — notes persist and resurface if this camera comes back"></textarea>
       <div class="dw-sec">History</div>
@@ -490,9 +660,13 @@ function handleFile(f){
       const {reportDate, assets}=parseReport(new Uint8Array(e.target.result));
       toast('Uploading '+assets.length+' cameras…');
       const rep=await ingest(reportDate, assets);
-      view='overview'; branchFilter=null;
+      branchFilter=null;
+      const historical = S.currentWeek && reportDate < S.currentWeek;
+      if(!historical) view='overview';
       render();
-      toast(`Loaded ${assets.length} cameras — report ${reportDate}` + (rep.length? ` · ${rep.length} repeat offender${rep.length>1?'s':''} back` : ''));
+      toast(historical
+        ? `Historical report ${reportDate} merged — board stays on ${S.currentWeek}`
+        : `Loaded ${assets.length} cameras — report ${reportDate}` + (rep.length? ` · ${rep.length} repeat offender${rep.length>1?'s':''} back` : ''));
     }catch(err){ alert(err.message); }
   };
   rd.readAsArrayBuffer(f);

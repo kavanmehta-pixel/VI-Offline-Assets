@@ -50,6 +50,12 @@ def init_db():
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS snapshots(
+            asset TEXT NOT NULL,
+            week TEXT NOT NULL,
+            snap TEXT NOT NULL,
+            PRIMARY KEY(asset, week)
+        );
         CREATE TABLE IF NOT EXISTS comments(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asset TEXT NOT NULL,
@@ -109,7 +115,16 @@ def state():
     weeks = {r["week"]: {"uploadedAt": r["uploaded_at"], "ids": []} for r in d.execute("SELECT * FROM weeks")}
     assets = {}
     for r in d.execute("SELECT * FROM assets"):
-        assets[r["id"]] = {"snap": json.loads(r["snap"]), "appearances": [], "fixes": [], "comments": []}
+        assets[r["id"]] = {"snap": json.loads(r["snap"]), "appearances": [], "fixes": [], "comments": [], "days": {}}
+    # authoritative snap = snapshot from the latest week the asset appeared; also build days-offline series
+    for r in d.execute(
+        "SELECT s.asset, s.week, s.snap FROM snapshots s ORDER BY s.week"
+    ):
+        if r["asset"] not in assets:
+            assets[r["asset"]] = {"snap": {}, "appearances": [], "fixes": [], "comments": [], "days": {}}
+        snap = json.loads(r["snap"])
+        assets[r["asset"]]["snap"] = snap  # ordered by week asc -> ends at latest
+        assets[r["asset"]]["days"][r["week"]] = snap.get("daysOffline", 0)
     for r in d.execute("SELECT * FROM appearances ORDER BY week"):
         if r["asset"] in assets:
             assets[r["asset"]]["appearances"].append(r["week"])
@@ -144,8 +159,12 @@ def ingest():
         seen = d.execute("SELECT 1 FROM appearances WHERE asset=? AND week=?", (aid, week)).fetchone()
         if prev and had_fix and not seen:
             reappeared.append(aid)
-        d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)", (aid, json.dumps(a)))
+        d.execute("INSERT OR REPLACE INTO snapshots(asset, week, snap) VALUES(?,?,?)", (aid, week, json.dumps(a)))
         d.execute("INSERT OR IGNORE INTO appearances(asset, week) VALUES(?,?)", (aid, week))
+        # keep assets.snap as the snapshot from the LATEST week this asset appeared
+        latest = d.execute("SELECT MAX(week) w FROM appearances WHERE asset=?", (aid,)).fetchone()["w"]
+        if latest == week:
+            d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)", (aid, json.dumps(a)))
     d.commit()
     return jsonify({"ok": True, "week": week, "count": len(rows), "reappeared": reappeared})
 
@@ -194,6 +213,10 @@ def import_state():
     for aid, rec in (p.get("assets") or {}).items():
         d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)",
                   (aid, json.dumps(rec.get("snap") or {})))
+        aps = rec.get("appearances") or []
+        if len(aps) == 1 and rec.get("snap"):
+            d.execute("INSERT OR IGNORE INTO snapshots(asset, week, snap) VALUES(?,?,?)",
+                      (aid, aps[0], json.dumps(rec["snap"])))
         for wk in rec.get("appearances") or []:
             d.execute("INSERT OR IGNORE INTO appearances(asset, week) VALUES(?,?)", (aid, wk))
         for f in rec.get("fixes") or []:
