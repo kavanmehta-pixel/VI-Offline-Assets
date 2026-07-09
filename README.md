@@ -1,11 +1,18 @@
-# VI Offline Assets — weekly triage board
+# VI Offline Assets — weekly triage board (Railway)
 
-Self-serve dashboard for branch triage of cameras offline >168 hours.
+Shared self-serve dashboard for branch triage of cameras offline >168 hours.
+Flask + SQLite; all fixes, notes and history persist server-side so every branch sees one live board.
 
-**Weekly flow:** upload the `Weekly_Offline_Assets_DDMMYYYY.xlsx` export from the hub as-is (no conversion). The board reads the report date from the title row, strips the branch summary block, and merges into history.
+## Deploy (Railway)
+1. New Project -> Deploy from GitHub repo -> `kavanmehta-pixel/vi-offline-assets`
+2. Env vars: `DB_PATH=/data/vi_offline.db`, optionally `APP_PASSCODE=<code>` to gate access
+3. Add a Volume mounted at `/data` (persists the DB between deploys — do not skip)
+4. Deploy
 
-**Triage order built in:** Pickles first (headline + branch split), then longest offline. Branch drill-down from the overview.
+## Weekly flow
+Upload the `Weekly_Offline_Assets_DDMMYYYY.xlsx` hub export as-is. Report date is read
+from the title row; the branch summary block is stripped. Cameras are keyed by asset
+number — notes and history resurface automatically when a camera reappears (x N badge).
 
-**Repair tracking:** Mark fixed per camera → running tally (reported / fixed / remaining). Notes and history are keyed to asset number and resurface automatically if a camera reappears on a later report (repeat-offender ×N badge).
-
-**Persistence (Step 1):** browser localStorage + JSON export/import. Step 2: shared backend via Cloudflare Worker + Google Sheets (same stack as Vision-Stock-Take) so all branches see one live state, behind Cloudflare Access.
+## Migration
+Use Import to load a JSON export from the GitHub Pages (localStorage) version.

@@ -1,0 +1,212 @@
+import json
+import os
+import sqlite3
+from datetime import datetime, timezone
+from functools import wraps
+
+from flask import Flask, g, jsonify, request, send_from_directory, make_response
+
+DB_PATH = os.environ.get("DB_PATH", "vi_offline.db")
+PASSCODE = os.environ.get("APP_PASSCODE", "")  # optional shared access code
+
+app = Flask(__name__, static_folder=None)
+
+
+def db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA journal_mode=WAL")
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_):
+    d = g.pop("db", None)
+    if d:
+        d.close()
+
+
+def init_db():
+    con = sqlite3.connect(DB_PATH)
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS weeks(
+            week TEXT PRIMARY KEY,
+            uploaded_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assets(
+            id TEXT PRIMARY KEY,
+            snap TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS appearances(
+            asset TEXT NOT NULL,
+            week TEXT NOT NULL,
+            PRIMARY KEY(asset, week)
+        );
+        CREATE TABLE IF NOT EXISTS fixes(
+            asset TEXT NOT NULL,
+            week TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            PRIMARY KEY(asset, week)
+        );
+        CREATE TABLE IF NOT EXISTS comments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            text TEXT NOT NULL
+        );
+        """
+    )
+    con.commit()
+    con.close()
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def authed():
+    if not PASSCODE:
+        return True
+    return request.cookies.get("vi_pass") == PASSCODE
+
+
+def require_auth(f):
+    @wraps(f)
+    def w(*a, **k):
+        if not authed():
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*a, **k)
+
+    return w
+
+
+@app.get("/")
+def index():
+    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), "index.html")
+
+
+@app.get("/api/auth")
+def auth_status():
+    return jsonify({"required": bool(PASSCODE), "ok": authed()})
+
+
+@app.post("/api/auth")
+def auth_login():
+    code = (request.get_json(silent=True) or {}).get("code", "")
+    if not PASSCODE or code == PASSCODE:
+        resp = make_response(jsonify({"ok": True}))
+        resp.set_cookie("vi_pass", code, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
+        return resp
+    return jsonify({"ok": False}), 401
+
+
+@app.get("/api/state")
+@require_auth
+def state():
+    d = db()
+    weeks = {r["week"]: {"uploadedAt": r["uploaded_at"], "ids": []} for r in d.execute("SELECT * FROM weeks")}
+    assets = {}
+    for r in d.execute("SELECT * FROM assets"):
+        assets[r["id"]] = {"snap": json.loads(r["snap"]), "appearances": [], "fixes": [], "comments": []}
+    for r in d.execute("SELECT * FROM appearances ORDER BY week"):
+        if r["asset"] in assets:
+            assets[r["asset"]]["appearances"].append(r["week"])
+        if r["week"] in weeks:
+            weeks[r["week"]]["ids"].append(r["asset"])
+    for r in d.execute("SELECT * FROM fixes"):
+        if r["asset"] in assets:
+            assets[r["asset"]]["fixes"].append({"week": r["week"], "date": r["ts"]})
+    for r in d.execute("SELECT * FROM comments ORDER BY ts"):
+        if r["asset"] in assets:
+            assets[r["asset"]]["comments"].append({"ts": r["ts"], "text": r["text"]})
+    cur = max(weeks.keys()) if weeks else None
+    return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets})
+
+
+@app.post("/api/ingest")
+@require_auth
+def ingest():
+    p = request.get_json(force=True)
+    week, rows = p.get("reportDate"), p.get("assets", [])
+    if not week or not rows:
+        return jsonify({"error": "reportDate and assets required"}), 400
+    d = db()
+    d.execute("INSERT OR REPLACE INTO weeks(week, uploaded_at) VALUES(?,?)", (week, now()))
+    reappeared = []
+    for a in rows:
+        aid = a.get("id")
+        if not aid:
+            continue
+        prev = d.execute("SELECT 1 FROM assets WHERE id=?", (aid,)).fetchone()
+        had_fix = d.execute("SELECT 1 FROM fixes WHERE asset=? LIMIT 1", (aid,)).fetchone()
+        seen = d.execute("SELECT 1 FROM appearances WHERE asset=? AND week=?", (aid, week)).fetchone()
+        if prev and had_fix and not seen:
+            reappeared.append(aid)
+        d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)", (aid, json.dumps(a)))
+        d.execute("INSERT OR IGNORE INTO appearances(asset, week) VALUES(?,?)", (aid, week))
+    d.commit()
+    return jsonify({"ok": True, "week": week, "count": len(rows), "reappeared": reappeared})
+
+
+@app.post("/api/fix")
+@require_auth
+def fix():
+    p = request.get_json(force=True)
+    aid, week, on = p.get("id"), p.get("week"), bool(p.get("on"))
+    if not aid or not week:
+        return jsonify({"error": "id and week required"}), 400
+    d = db()
+    if on:
+        d.execute("INSERT OR REPLACE INTO fixes(asset, week, ts) VALUES(?,?,?)", (aid, week, now()))
+    else:
+        d.execute("DELETE FROM fixes WHERE asset=? AND week=?", (aid, week))
+    d.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/note")
+@require_auth
+def note():
+    p = request.get_json(force=True)
+    aid, text = p.get("id"), (p.get("text") or "").strip()
+    if not aid or not text:
+        return jsonify({"error": "id and text required"}), 400
+    ts = now()
+    d = db()
+    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)", (aid, ts, text))
+    d.commit()
+    return jsonify({"ok": True, "ts": ts})
+
+
+@app.post("/api/import")
+@require_auth
+def import_state():
+    """Full-state restore from a localStorage/JSON export (migration path)."""
+    p = request.get_json(force=True)
+    if "assets" not in p:
+        return jsonify({"error": "not a valid export"}), 400
+    d = db()
+    for week, w in (p.get("weeks") or {}).items():
+        d.execute("INSERT OR REPLACE INTO weeks(week, uploaded_at) VALUES(?,?)",
+                  (week, w.get("uploadedAt") or now()))
+    for aid, rec in (p.get("assets") or {}).items():
+        d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)",
+                  (aid, json.dumps(rec.get("snap") or {})))
+        for wk in rec.get("appearances") or []:
+            d.execute("INSERT OR IGNORE INTO appearances(asset, week) VALUES(?,?)", (aid, wk))
+        for f in rec.get("fixes") or []:
+            d.execute("INSERT OR REPLACE INTO fixes(asset, week, ts) VALUES(?,?,?)",
+                      (aid, f.get("week"), f.get("date") or now()))
+        for c in rec.get("comments") or []:
+            d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
+                      (aid, c.get("ts") or now(), c.get("text") or ""))
+    d.commit()
+    return jsonify({"ok": True})
+
+
+init_db()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

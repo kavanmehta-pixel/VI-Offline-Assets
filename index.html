@@ -179,13 +179,15 @@ input[type=file]{display:none}
 
 <script>
 /* ================= state ================= */
-const LSKEY='vi_offline_v2';
-let S = load();
-function load(){
-  try{ return JSON.parse(localStorage.getItem(LSKEY)) || blank(); }catch(e){ return blank(); }
+let S = {currentWeek:null, weeks:{}, assets:{}};
+async function api(path, body){
+  const r = await fetch('/api/'+path, body? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {});
+  if(r.status===401){ showGate(); throw new Error('unauthorized'); }
+  if(!r.ok) throw new Error('Server error ('+r.status+')');
+  return r.json();
 }
-function blank(){ return {currentWeek:null, weeks:{}, assets:{}}; }
-function save(){ localStorage.setItem(LSKEY, JSON.stringify(S)); }
+async function refresh(){ S = await api('state'); }
+function save(){} /* server-persisted */
 
 let view='overview', branchFilter=null, sortKey='daysOffline', sortDir=-1, search='';
 
@@ -229,24 +231,10 @@ function parseReport(data){
   return {reportDate, assets};
 }
 
-function ingest(reportDate, assets){
-  const wasNew = !S.weeks[reportDate];
-  S.weeks[reportDate] = {uploadedAt:new Date().toISOString(), ids:assets.map(a=>a.id)};
-  const reappeared=[];
-  for(const a of assets){
-    let rec = S.assets[a.id];
-    if(!rec){ rec = S.assets[a.id] = {appearances:[], fixes:[], comments:[], snap:{}}; }
-    if(!rec.appearances.includes(reportDate)){
-      // if it was previously fixed and shows up again, that's a repeat
-      if(rec.fixes.length && rec.appearances.length) reappeared.push(a.id);
-      rec.appearances.push(reportDate);
-      rec.appearances.sort();
-    }
-    rec.snap = a; // latest snapshot
-  }
-  S.currentWeek = Object.keys(S.weeks).sort().pop();
-  save();
-  return reappeared;
+async function ingest(reportDate, assets){
+  const res = await api('ingest', {reportDate, assets});
+  await refresh();
+  return res.reappeared || [];
 }
 
 /* ================= derived ================= */
@@ -349,7 +337,7 @@ function renderOverview(open, all){
       <tbody>${worst.map(rowHtml).join('')}</tbody></table>
     </div>
   </div>
-  <div class="foot-note">Report ${S.currentWeek} &middot; ${all.length} cameras &gt;168h &middot; severity bands: 7–13d / 14–29d / 30–89d / 90d+ &middot; data stays in this browser — use Export history before switching machines</div>`;
+  <div class="foot-note">Report ${S.currentWeek} &middot; ${all.length} cameras &gt;168h &middot; severity bands: 7–13d / 14–29d / 30–89d / 90d+ &middot; shared board — fixes and notes save to the server and are visible to all branches</div>`;
 }
 
 function rowHtml(r){
@@ -469,18 +457,24 @@ function openDrawer(id){
 function closeDrawer(){ drawerId=null; $('#overlay').classList.remove('on'); $('#drawer').classList.remove('on'); }
 function saveNote(){
   const t=$('#cbox').value.trim(); if(!t||!drawerId) return;
-  S.assets[drawerId].comments.push({ts:new Date().toISOString(), text:t});
-  save(); openDrawer(drawerId); render(); toast('Note saved');
+  const id=drawerId;
+  api('note',{id, text:t}).then(res=>{
+    S.assets[id].comments.push({ts:res.ts, text:t});
+    if(drawerId===id) openDrawer(id);
+    render(); toast('Note saved');
+  }).catch(()=>toast('Save failed — retry'));
 }
 
 /* ================= actions ================= */
 function toggleFix(id){
   const r=S.assets[id]; if(!r) return;
   const i=r.fixes.findIndex(f=>f.week===S.currentWeek);
-  if(i>=0){ r.fixes.splice(i,1); toast(id+' reopened'); }
-  else { r.fixes.push({week:S.currentWeek, date:new Date().toISOString()}); toast(id+' marked fixed'); }
-  save(); render();
+  const on = i<0;
+  if(on){ r.fixes.push({week:S.currentWeek, date:new Date().toISOString()}); toast(id+' marked fixed'); }
+  else { r.fixes.splice(i,1); toast(id+' reopened'); }
+  render();
   if(drawerId===id) openDrawer(id);
+  api('fix',{id, week:S.currentWeek, on}).catch(()=>{ toast('Save failed — refresh and retry'); });
 }
 function go(v, mode){ view=v; branchFilter=null; search=''; if(mode==='__longest'){sortKey='daysOffline';sortDir=-1;} render(); window.scrollTo(0,0); }
 function goBranch(b){ view='all'; branchFilter=b; search=''; render(); window.scrollTo(0,0); }
@@ -491,10 +485,11 @@ function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('on'); 
 /* ================= io ================= */
 function handleFile(f){
   const rd=new FileReader();
-  rd.onload=e=>{
+  rd.onload=async e=>{
     try{
       const {reportDate, assets}=parseReport(new Uint8Array(e.target.result));
-      const rep=ingest(reportDate, assets);
+      toast('Uploading '+assets.length+' cameras…');
+      const rep=await ingest(reportDate, assets);
       view='overview'; branchFilter=null;
       render();
       toast(`Loaded ${assets.length} cameras — report ${reportDate}` + (rep.length? ` · ${rep.length} repeat offender${rep.length>1?'s':''} back` : ''));
@@ -513,7 +508,7 @@ document.getElementById('btnImport').onclick=()=>document.getElementById('jsonIn
 document.getElementById('jsonIn').onchange=e=>{
   const f=e.target.files[0]; if(!f) return;
   const rd=new FileReader();
-  rd.onload=ev=>{ try{ const d=JSON.parse(ev.target.result); if(!d.assets) throw 0; S=d; save(); render(); toast('History imported'); }catch(_){ alert('Not a valid history export.'); } };
+  rd.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(!d.assets) throw 0; await api('import', d); await refresh(); render(); toast('History imported'); }catch(_){ alert('Import failed — not a valid history export.'); } };
   rd.readAsText(f); e.target.value='';
 };
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
@@ -526,7 +521,32 @@ function wireDrop(){
   ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('hot');}));
   dz.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
 }
-render();
+function showGate(){
+  $('#nav').style.display='none'; $('#triage').style.display='none';
+  $('#main').innerHTML = `<div class="drop" style="padding:60px 30px">
+    <h3>Enter access code</h3>
+    <p>This board is restricted. Enter the VI access code to continue.</p>
+    <div style="display:flex;gap:8px;justify-content:center">
+      <input id="pc" type="password" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:14px;width:200px" placeholder="Access code">
+      <button class="btn2" onclick="login()">Enter</button>
+    </div><div id="pcerr" style="color:var(--red);font-size:12px;margin-top:10px"></div></div>`;
+  const pc=document.getElementById('pc');
+  pc.addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+  pc.focus();
+}
+async function login(){
+  const code=document.getElementById('pc').value;
+  const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+  if(r.ok){ boot(); } else { document.getElementById('pcerr').textContent='Wrong code.'; }
+}
+async function boot(){
+  try{
+    const a = await (await fetch('/api/auth')).json();
+    if(a.required && !a.ok){ showGate(); return; }
+    await refresh(); render();
+  }catch(e){ $('#main').innerHTML='<div class="drop"><h3>Server unreachable</h3><p>'+esc(e.message)+'</p></div>'; }
+}
+boot();
 </script>
 </body>
 </html>
