@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VI Offline Assets</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EEF0EC; --card:#FFFFFF; --ink:#171A1E; --muted:#5B6470;
+  --slate:#232B33; --slate2:#2E3A45; --line:#D8DCD6;
+  --red:#C0392B; --red-bg:#F9E9E7; --amber:#C77F0A; --amber-bg:#FBF1DD;
+  --orange:#C55A11; --orange-bg:#FAEBDE;
+  --green:#2F7A4D; --green-bg:#E5F1E9; --hazard:#F2C230;
+  --mono:'IBM Plex Mono',monospace; --sans:'Archivo',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);background:var(--paper);color:var(--ink);font-size:14px;line-height:1.45}
+button{font-family:inherit;cursor:pointer}
+.wrap{max-width:1240px;margin:0 auto;padding:0 20px}
+
+/* ---------- header ---------- */
+header{background:var(--slate);color:#fff}
+.hd{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand h1{font-weight:900;font-size:17px;letter-spacing:.06em;text-transform:uppercase}
+.brand .sub{font-family:var(--mono);font-size:11px;color:#9FB0BE}
+.hd-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{border:1px solid #46545F;background:transparent;color:#DDE5EA;padding:7px 12px;font-size:12px;font-weight:600;letter-spacing:.02em;border-radius:3px}
+.btn:hover{background:#2E3A45}
+.btn.primary{background:var(--hazard);border-color:var(--hazard);color:#171A1E}
+.btn.primary:hover{background:#E5B41E}
+.weekof{font-family:var(--mono);font-size:12px;color:#9FB0BE}
+.weekof b{color:#fff}
+
+/* ---------- triage strip ---------- */
+.triage{background:var(--slate2);color:#fff;border-top:1px solid #3A4854}
+.triage-in{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+.t-block{padding:16px 26px 16px 0;margin-right:26px;border-right:1px solid #3A4854;cursor:pointer}
+.t-block:last-child{border-right:none}
+.t-block:hover .t-num{color:var(--hazard)}
+.t-label{font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8FA1AF;display:flex;align-items:center;gap:6px}
+.t-label .tag{background:var(--hazard);color:#171A1E;padding:1px 6px;border-radius:2px;letter-spacing:.1em}
+.t-num{font-size:38px;font-weight:900;line-height:1.1;transition:color .12s}
+.t-sub{font-family:var(--mono);font-size:11px;color:#9FB0BE;margin-top:2px}
+.t-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.chip{font-family:var(--mono);font-size:11px;background:#1B2229;border:1px solid #3A4854;color:#DDE5EA;padding:3px 8px;border-radius:2px}
+.chip b{color:var(--hazard)}
+.t-num.ok{color:#6FBF8E}
+
+/* ---------- nav ---------- */
+.nav{display:flex;gap:2px;padding:14px 0 0;flex-wrap:wrap}
+.nav button{background:transparent;border:none;border-bottom:3px solid transparent;padding:8px 14px;font-size:13px;font-weight:700;letter-spacing:.03em;color:var(--muted)}
+.nav button.on{color:var(--ink);border-bottom-color:var(--ink)}
+.nav button:hover{color:var(--ink)}
+.nav .count{font-family:var(--mono);font-size:11px;margin-left:5px;background:var(--line);padding:1px 6px;border-radius:10px;color:var(--ink)}
+
+/* ---------- main ---------- */
+main{padding:20px 0 60px}
+.grid{display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:4px}
+.card h2{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:12px 16px;border-bottom:1px solid var(--line)}
+
+/* branch list */
+.branch-row{display:flex;align-items:center;justify-content:space-between;padding:9px 16px;border-bottom:1px solid #EFF1ED;cursor:pointer;gap:8px}
+.branch-row:last-child{border-bottom:none}
+.branch-row:hover{background:#F7F8F5}
+.branch-row .nm{font-weight:600;font-size:13px}
+.branch-row .meta{display:flex;align-items:center;gap:10px}
+.branch-row .n{font-family:var(--mono);font-weight:600;font-size:13px;min-width:24px;text-align:right}
+.bar{height:6px;border-radius:3px;background:var(--slate2);min-width:2px}
+.pk-dot{width:7px;height:7px;border-radius:50%;background:var(--hazard);display:inline-block;margin-left:6px}
+
+/* table */
+table{width:100%;border-collapse:collapse}
+th{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none}
+th .arr{font-size:9px}
+td{padding:9px 12px;border-bottom:1px solid #EFF1ED;vertical-align:middle}
+tr.asset:hover td{background:#F7F8F5}
+tr.asset{cursor:pointer}
+.aid{font-family:var(--mono);font-weight:600;font-size:12.5px;white-space:nowrap}
+.cust{font-size:13px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dtag{font-family:var(--mono);font-weight:600;font-size:12px;padding:2px 8px;border-radius:2px;white-space:nowrap}
+.d1{background:#EDEFEA;color:#4B5560}
+.d2{background:var(--amber-bg);color:var(--amber)}
+.d3{background:var(--orange-bg);color:var(--orange)}
+.d4{background:var(--red-bg);color:var(--red)}
+.pk-flag{background:var(--hazard);color:#171A1E;font-size:9px;font-weight:800;letter-spacing:.1em;padding:2px 5px;border-radius:2px;margin-left:6px;vertical-align:1px}
+.rep-flag{background:var(--slate);color:#fff;font-size:9px;font-weight:800;letter-spacing:.08em;padding:2px 5px;border-radius:2px;margin-left:6px;vertical-align:1px}
+.note-flag{color:var(--muted);font-size:11px;margin-left:6px}
+.fixbtn{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;font-weight:700;padding:5px 10px;border-radius:3px;white-space:nowrap}
+.fixbtn:hover{border-color:var(--green);color:var(--green)}
+.fixbtn.done{background:var(--green);border-color:var(--green);color:#fff}
+.tbl-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap}
+.tbl-hd h2{padding:0;border:none}
+.tbl-hd input{border:1px solid var(--line);border-radius:3px;padding:6px 10px;font-family:var(--mono);font-size:12px;width:220px}
+.tbl-hd .back{border:none;background:none;font-weight:700;font-size:12px;color:var(--muted);padding:0}
+.tbl-hd .back:hover{color:var(--ink)}
+.tally{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.tally b{color:var(--ink)}
+.tally .g{color:var(--green)}
+
+/* detail drawer */
+.overlay{position:fixed;inset:0;background:rgba(20,24,28,.45);display:none;z-index:40}
+.overlay.on{display:block}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:94vw;background:#fff;z-index:41;transform:translateX(102%);transition:transform .18s ease;display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(0,0,0,.15)}
+.drawer.on{transform:none}
+.dw-hd{background:var(--slate);color:#fff;padding:18px 20px}
+.dw-hd .aid{font-size:18px;color:#fff}
+.dw-hd .c{font-size:13px;color:#BBC8D2;margin-top:2px}
+.dw-hd .x{position:absolute;top:14px;right:16px;background:none;border:none;color:#9FB0BE;font-size:20px}
+.dw-body{flex:1;overflow-y:auto;padding:18px 20px}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;font-size:12.5px;margin-bottom:16px}
+.kv .k{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding-top:1px}
+.kv .v{font-family:var(--mono)}
+.dw-sec{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;padding-top:14px;border-top:1px solid var(--line)}
+.hist-item{padding:8px 10px;background:#F6F7F4;border-left:3px solid var(--line);margin-bottom:6px;font-size:12.5px}
+.hist-item .ts{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:block;margin-bottom:2px}
+.hist-item.fix{border-left-color:var(--green)}
+.hist-item.appear{border-left-color:var(--amber)}
+.cbox{width:100%;border:1px solid var(--line);border-radius:3px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;min-height:60px}
+.dw-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:8px}
+.dw-foot .fixbtn{flex:1;padding:10px;font-size:13px}
+.dw-foot .save{flex:1;border:1px solid var(--slate);background:var(--slate);color:#fff;font-weight:700;font-size:13px;border-radius:3px}
+
+/* empty / dropzone */
+.drop{border:2px dashed #B9C0B7;border-radius:6px;padding:70px 30px;text-align:center;background:#F5F6F3;margin-top:24px;transition:border-color .12s,background .12s}
+.drop.hot{border-color:var(--slate);background:#ECEFE9}
+.drop h3{font-size:20px;font-weight:800;margin-bottom:8px}
+.drop p{color:var(--muted);max-width:480px;margin:0 auto 18px}
+.drop .btn2{background:var(--slate);color:#fff;border:none;padding:11px 22px;font-weight:700;font-size:13px;border-radius:3px}
+.drop .fmt{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:14px}
+
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--slate);color:#fff;padding:11px 20px;border-radius:4px;font-size:13px;font-weight:600;transition:transform .2s;z-index:60}
+.toast.on{transform:translateX(-50%) translateY(0)}
+input[type=file]{display:none}
+.foot-note{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:26px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hd">
+    <div class="brand">
+      <h1>VI Offline Assets</h1>
+      <span class="sub">168-hr triage board</span>
+    </div>
+    <div class="hd-actions">
+      <span class="weekof" id="weekof"></span>
+      <button class="btn" id="btnExport">Export history</button>
+      <button class="btn" id="btnImport">Import</button>
+      <button class="btn primary" id="btnUpload">Upload weekly report</button>
+      <input type="file" id="fileIn" accept=".xlsx,.xls,.csv">
+      <input type="file" id="jsonIn" accept=".json">
+    </div>
+  </div>
+  <div class="triage" id="triage" style="display:none">
+    <div class="wrap triage-in" id="triageIn"></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="nav" id="nav" style="display:none">
+    <button data-v="overview" class="on">Overview</button>
+    <button data-v="pickles">Pickles <span class="count" id="cPk">0</span></button>
+    <button data-v="all">All offline <span class="count" id="cAll">0</span></button>
+    <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
+  </div>
+</div>
+
+<main class="wrap" id="main"></main>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer"></aside>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================= state ================= */
+const LSKEY='vi_offline_v2';
+let S = load();
+function load(){
+  try{ return JSON.parse(localStorage.getItem(LSKEY)) || blank(); }catch(e){ return blank(); }
+}
+function blank(){ return {currentWeek:null, weeks:{}, assets:{}}; }
+function save(){ localStorage.setItem(LSKEY, JSON.stringify(S)); }
+
+let view='overview', branchFilter=null, sortKey='daysOffline', sortDir=-1, search='';
+
+/* ================= parsing ================= */
+function num(v){ return parseFloat(String(v==null?'':v).replace(/,/g,''))||0; }
+function parseReport(data){
+  const wb = XLSX.read(data, {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:false});
+  let reportDate=null;
+  for(const r of rows.slice(0,6)){
+    const m=((r&&r[0])||'').toString().match(/as of (\d{4}-\d{2}-\d{2})/i);
+    if(m){reportDate=m[1];break;}
+  }
+  const hi = rows.findIndex(r => ((r&&r[0])||'').toString().trim()==='Asset #');
+  if(hi<0) throw new Error('Could not find the "Asset #" header row — is this the weekly 168-hour offline report?');
+  const H = rows[hi].map(h=>(h||'').toString().trim().toLowerCase());
+  const col = n => H.findIndex(h=>h.startsWith(n));
+  const c={a:col('asset #'),cu:col('customer'),m:col('monitored'),b:col('branch'),t:col('asset type'),
+           hb:col('last heartbeat'),h:col('hours'),d:col('days'),r:col('reliably'),l:col('suitable')};
+  const assets=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[]; const a=((r[c.a])||'').toString().trim();
+    if(!a) break;
+    if(!/^CAM/i.test(a)) break;
+    assets.push({
+      id:a, customer:((r[c.cu])||'').toString().trim(),
+      monitored:((r[c.m])||'').toString().trim()==='Yes',
+      branch:((r[c.b])||'').toString().trim(),
+      type:((r[c.t])||'').toString().trim(),
+      lastHeartbeat:((r[c.hb])||'').toString().trim(),
+      hoursOffline:num(r[c.h]),
+      daysOffline:num(r[c.d]),
+      reachable:((r[c.r])||'').toString().trim(),
+      location:((r[c.l])||'').toString().trim(),
+      pickles:/pickles/i.test(((r[c.cu])||'').toString())
+    });
+  }
+  if(!assets.length) throw new Error('No camera rows found in the file.');
+  if(!reportDate) reportDate = new Date().toISOString().slice(0,10);
+  return {reportDate, assets};
+}
+
+function ingest(reportDate, assets){
+  const wasNew = !S.weeks[reportDate];
+  S.weeks[reportDate] = {uploadedAt:new Date().toISOString(), ids:assets.map(a=>a.id)};
+  const reappeared=[];
+  for(const a of assets){
+    let rec = S.assets[a.id];
+    if(!rec){ rec = S.assets[a.id] = {appearances:[], fixes:[], comments:[], snap:{}}; }
+    if(!rec.appearances.includes(reportDate)){
+      // if it was previously fixed and shows up again, that's a repeat
+      if(rec.fixes.length && rec.appearances.length) reappeared.push(a.id);
+      rec.appearances.push(reportDate);
+      rec.appearances.sort();
+    }
+    rec.snap = a; // latest snapshot
+  }
+  S.currentWeek = Object.keys(S.weeks).sort().pop();
+  save();
+  return reappeared;
+}
+
+/* ================= derived ================= */
+function weekAssets(){
+  if(!S.currentWeek) return [];
+  return (S.weeks[S.currentWeek].ids||[]).map(id=>S.assets[id]).filter(Boolean);
+}
+function isFixed(rec){ return rec.fixes.some(f=>f.week===S.currentWeek); }
+function appearCount(rec){ return rec.appearances.length; }
+function sev(d){ return d>=90?4 : d>=30?3 : d>=14?2 : 1; }
+function sevClass(d){ return 'd'+sev(d); }
+function fmtDays(d){ return d>=1? d+'d' : '<1d'; }
+
+/* ================= render ================= */
+const $=s=>document.querySelector(s);
+function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render(){
+  const has = !!S.currentWeek;
+  $('#nav').style.display = has?'flex':'none';
+  $('#triage').style.display = has?'block':'none';
+  $('#weekof').innerHTML = has? `Report: <b>${S.currentWeek}</b>` : '';
+  if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
+
+  const A = weekAssets();
+  const open = A.filter(r=>!isFixed(r));
+  const fixed = A.filter(isFixed);
+  const pk = A.filter(r=>r.snap.pickles);
+  const pkOpen = pk.filter(r=>!isFixed(r));
+
+  // nav counts
+  $('#cPk').textContent = pkOpen.length;
+  $('#cAll').textContent = open.length;
+  $('#cFix').textContent = fixed.length;
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===view));
+
+  // triage strip
+  const pkBr = {};
+  pkOpen.forEach(r=>pkBr[r.snap.branch]=(pkBr[r.snap.branch]||0)+1);
+  const chips = Object.entries(pkBr).sort((a,b)=>b[1]-a[1])
+    .map(([b,n])=>`<span class="chip">${esc(b)} <b>${n}</b></span>`).join('');
+  $('#triageIn').innerHTML = `
+    <div class="t-block" onclick="go('pickles')">
+      <div class="t-label"><span class="tag">PRIORITY</span> Pickles down</div>
+      <div class="t-num ${pkOpen.length?'':'ok'}">${pkOpen.length}</div>
+      <div class="t-chips">${chips || '<span class="chip">all clear</span>'}</div>
+    </div>
+    <div class="t-block" onclick="go('all')">
+      <div class="t-label">Total offline &gt;168h</div>
+      <div class="t-num">${open.length}</div>
+      <div class="t-sub">${A.length} reported &middot; ${fixed.length} fixed &middot; ${open.length} remaining</div>
+    </div>
+    <div class="t-block" onclick="go('all','__longest')">
+      <div class="t-label">Longest offline</div>
+      <div class="t-num">${Math.max(0,...open.map(r=>r.snap.daysOffline))}<span style="font-size:18px">d</span></div>
+      <div class="t-sub">${esc((open.slice().sort((a,b)=>b.snap.daysOffline-a.snap.daysOffline)[0]||{snap:{}}).snap.id||'')}</div>
+    </div>
+    <div class="t-block" onclick="go('repaired')">
+      <div class="t-label">Fixed this week</div>
+      <div class="t-num" style="color:#6FBF8E">${fixed.length}</div>
+      <div class="t-sub">${pct(fixed.length, A.length)}% cleared</div>
+    </div>`;
+
+  if(view==='overview') renderOverview(open, A);
+  else if(view==='pickles') renderTable(pk, 'Pickles cameras', true);
+  else if(view==='all') renderTable(branchFilter? A.filter(r=>r.snap.branch===branchFilter) : A, branchFilter||'All offline cameras', false);
+  else if(view==='repaired') renderRepaired(fixed);
+}
+function pct(a,b){ return b? Math.round(a/b*100) : 0; }
+
+function dropzone(){
+  return `<div class="drop" id="dz">
+    <h3>Drop the weekly offline report</h3>
+    <p>Upload the 168-hour <b>Weekly Offline Assets</b> export straight from the hub — no conversion needed. The board reads the report date, strips the summary block, and keeps camera history week to week.</p>
+    <button class="btn2" onclick="document.getElementById('fileIn').click()">Choose file</button>
+    <div class="fmt">Weekly_Offline_Assets_DDMMYYYY.xlsx</div>
+  </div>`;
+}
+
+function renderOverview(open, all){
+  const byBr={};
+  open.forEach(r=>{ (byBr[r.snap.branch]=byBr[r.snap.branch]||{n:0,pk:0,max:0}); byBr[r.snap.branch].n++;
+    if(r.snap.pickles) byBr[r.snap.branch].pk++;
+    byBr[r.snap.branch].max=Math.max(byBr[r.snap.branch].max, r.snap.daysOffline); });
+  const rows = Object.entries(byBr).sort((a,b)=>b[1].n-a[1].n);
+  const maxN = Math.max(1,...rows.map(r=>r[1].n));
+  const worst = open.slice().sort((a,b)=>b.snap.daysOffline-a.snap.daysOffline).slice(0,10);
+  $('#main').innerHTML = `<div class="grid">
+    <div class="card">
+      <h2>Offline by branch</h2>
+      ${rows.map(([b,v])=>`
+        <div class="branch-row" onclick="goBranch('${esc(b).replace(/'/g,"\\'")}')">
+          <span class="nm">${esc(b)}${v.pk?'<span class="pk-dot" title="Pickles cameras here"></span>':''}</span>
+          <span class="meta"><span class="bar" style="width:${Math.round(v.n/maxN*90)}px"></span><span class="n">${v.n}</span></span>
+        </div>`).join('')}
+    </div>
+    <div class="card">
+      <h2>Longest offline — work these after Pickles</h2>
+      <table><thead><tr><th>Asset</th><th>Customer</th><th>Branch</th><th>Offline</th><th></th></tr></thead>
+      <tbody>${worst.map(rowHtml).join('')}</tbody></table>
+    </div>
+  </div>
+  <div class="foot-note">Report ${S.currentWeek} &middot; ${all.length} cameras &gt;168h &middot; severity bands: 7–13d / 14–29d / 30–89d / 90d+ &middot; data stays in this browser — use Export history before switching machines</div>`;
+}
+
+function rowHtml(r){
+  const a=r.snap, fixed=isFixed(r), n=appearCount(r), notes=r.comments.length;
+  return `<tr class="asset" onclick="openDrawer('${a.id}')">
+    <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${n>1?`<span class="rep-flag" title="Appeared in ${n} weekly reports">&times;${n}</span>`:''}${notes?`<span class="note-flag" title="${notes} note(s)">&#9998;${notes}</span>`:''}</td>
+    <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
+    <td>${esc(a.branch)}</td>
+    <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td>
+    <td style="text-align:right"><button class="fixbtn ${fixed?'done':''}" onclick="event.stopPropagation();toggleFix('${a.id}')">${fixed?'&#10003; Fixed':'Mark fixed'}</button></td>
+  </tr>`;
+}
+
+function renderTable(recs, title, isPk){
+  let list = recs.filter(r=>{
+    if(!search) return true;
+    const q=search.toLowerCase(), a=r.snap;
+    return a.id.toLowerCase().includes(q)||a.customer.toLowerCase().includes(q)||a.branch.toLowerCase().includes(q)||a.type.toLowerCase().includes(q);
+  });
+  list.sort((x,y)=>{
+    const a=x.snap[sortKey], b=y.snap[sortKey];
+    return (typeof a==='number'? a-b : String(a).localeCompare(String(b)))*sortDir;
+  });
+  const open=recs.filter(r=>!isFixed(r)).length, fx=recs.length-open;
+  const arr=k=> sortKey===k? `<span class="arr">${sortDir<0?'&#9660;':'&#9650;'}</span>`:'';
+  $('#main').innerHTML = `<div class="card">
+    <div class="tbl-hd">
+      <div style="display:flex;align-items:center;gap:14px">
+        ${branchFilter?`<button class="back" onclick="clearBranch()">&larr; All branches</button>`:''}
+        <h2>${esc(title)}</h2>
+        <span class="tally"><b>${recs.length}</b> reported &middot; <span class="g">${fx} fixed</span> &middot; <b>${open}</b> remaining</span>
+      </div>
+      <input placeholder="Filter asset / customer / branch" value="${esc(search)}" oninput="search=this.value;render()">
+    </div>
+    <table><thead><tr>
+      <th onclick="setSort('id')">Asset ${arr('id')}</th>
+      <th onclick="setSort('customer')">Customer ${arr('customer')}</th>
+      <th onclick="setSort('branch')">Branch ${arr('branch')}</th>
+      <th onclick="setSort('type')">Type ${arr('type')}</th>
+      <th onclick="setSort('lastHeartbeat')">Last heartbeat ${arr('lastHeartbeat')}</th>
+      <th onclick="setSort('daysOffline')">Offline ${arr('daysOffline')}</th>
+      <th></th>
+    </tr></thead><tbody>
+    ${list.map(r=>{
+      const a=r.snap, fixed=isFixed(r), n=appearCount(r), notes=r.comments.length;
+      return `<tr class="asset" onclick="openDrawer('${a.id}')">
+        <td><span class="aid">${esc(a.id)}</span>${!isPk&&a.pickles?'<span class="pk-flag">PICKLES</span>':''}${n>1?`<span class="rep-flag" title="Appeared in ${n} weekly reports">&times;${n}</span>`:''}${notes?`<span class="note-flag">&#9998;${notes}</span>`:''}</td>
+        <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
+        <td>${esc(a.branch)}</td>
+        <td style="font-family:var(--mono);font-size:12px">${esc(a.type)}</td>
+        <td style="font-family:var(--mono);font-size:12px;white-space:nowrap">${esc(a.lastHeartbeat)}</td>
+        <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td>
+        <td style="text-align:right"><button class="fixbtn ${fixed?'done':''}" onclick="event.stopPropagation();toggleFix('${a.id}')">${fixed?'&#10003; Fixed':'Mark fixed'}</button></td>
+      </tr>`;}).join('')}
+    ${!list.length?'<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px">Nothing here.</td></tr>':''}
+    </tbody></table>
+  </div>`;
+}
+
+function renderRepaired(fixed){
+  $('#main').innerHTML = `<div class="card">
+    <div class="tbl-hd"><h2>Repaired this week</h2>
+      <span class="tally"><span class="g">${fixed.length} fixed</span> against report ${S.currentWeek}</span></div>
+    <table><thead><tr><th>Asset</th><th>Customer</th><th>Branch</th><th>Was offline</th><th>Fixed</th><th></th></tr></thead><tbody>
+    ${fixed.map(r=>{
+      const a=r.snap, f=r.fixes.filter(f=>f.week===S.currentWeek).pop();
+      return `<tr class="asset" onclick="openDrawer('${a.id}')">
+        <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}</td>
+        <td><span class="cust">${esc(a.customer)}</span></td><td>${esc(a.branch)}</td>
+        <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td>
+        <td style="font-family:var(--mono);font-size:12px">${f? new Date(f.date).toLocaleString('en-AU',{dateStyle:'short',timeStyle:'short'}):''}</td>
+        <td style="text-align:right"><button class="fixbtn done" onclick="event.stopPropagation();toggleFix('${a.id}')">&#10003; Fixed</button></td>
+      </tr>`;}).join('')}
+    ${!fixed.length?'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:30px">No cameras marked fixed yet this week.</td></tr>':''}
+    </tbody></table></div>`;
+}
+
+/* ================= drawer ================= */
+let drawerId=null;
+function openDrawer(id){
+  drawerId=id;
+  const r=S.assets[id]; if(!r) return;
+  const a=r.snap, fixed=isFixed(r);
+  const events=[];
+  r.appearances.forEach(w=>events.push({ts:w, cls:'appear', txt:`Appeared on weekly report ${w}`}));
+  r.fixes.forEach(f=>events.push({ts:f.date, cls:'fix', txt:`Marked fixed (report ${f.week})`}));
+  r.comments.forEach(c=>events.push({ts:c.ts, cls:'', txt:c.text}));
+  events.sort((x,y)=>String(y.ts).localeCompare(String(x.ts)));
+  $('#drawer').innerHTML = `
+    <div class="dw-hd" style="position:relative">
+      <button class="x" onclick="closeDrawer()">&times;</button>
+      <div class="aid">${esc(a.id)} ${a.pickles?'<span class="pk-flag" style="vertical-align:3px">PICKLES</span>':''}</div>
+      <div class="c">${esc(a.customer)}</div>
+    </div>
+    <div class="dw-body">
+      <div class="kv">
+        <span class="k">Branch</span><span class="v">${esc(a.branch)}</span>
+        <span class="k">Asset type</span><span class="v">${esc(a.type)}</span>
+        <span class="k">Offline</span><span class="v">${a.daysOffline}d (${a.hoursOffline}h)</span>
+        <span class="k">Last heartbeat</span><span class="v">${esc(a.lastHeartbeat)}</span>
+        <span class="k">Monitored</span><span class="v">${a.monitored?'Yes':'No'}</span>
+        ${a.reachable?`<span class="k">Reliably reachable</span><span class="v">${esc(a.reachable)}</span>`:''}
+        ${a.location?`<span class="k">Suitable location</span><span class="v">${esc(a.location)}</span>`:''}
+        <span class="k">Report appearances</span><span class="v">${appearCount(r)} week${appearCount(r)>1?'s':''}</span>
+      </div>
+      <div class="dw-sec">Add note</div>
+      <textarea class="cbox" id="cbox" placeholder="e.g. battery replaced, camera in full shade, client moved unit — notes persist and resurface if this camera comes back"></textarea>
+      <div class="dw-sec">History</div>
+      ${events.map(e=>`<div class="hist-item ${e.cls}"><span class="ts">${esc(String(e.ts).slice(0,16).replace('T',' '))}</span>${esc(e.txt)}</div>`).join('') || '<div style="color:var(--muted);font-size:12.5px">No history yet.</div>'}
+    </div>
+    <div class="dw-foot">
+      <button class="save" onclick="saveNote()">Save note</button>
+      <button class="fixbtn ${fixed?'done':''}" onclick="toggleFix('${a.id}');openDrawer('${a.id}')">${fixed?'&#10003; Fixed — undo':'Mark fixed'}</button>
+    </div>`;
+  $('#overlay').classList.add('on'); $('#drawer').classList.add('on');
+}
+function closeDrawer(){ drawerId=null; $('#overlay').classList.remove('on'); $('#drawer').classList.remove('on'); }
+function saveNote(){
+  const t=$('#cbox').value.trim(); if(!t||!drawerId) return;
+  S.assets[drawerId].comments.push({ts:new Date().toISOString(), text:t});
+  save(); openDrawer(drawerId); render(); toast('Note saved');
+}
+
+/* ================= actions ================= */
+function toggleFix(id){
+  const r=S.assets[id]; if(!r) return;
+  const i=r.fixes.findIndex(f=>f.week===S.currentWeek);
+  if(i>=0){ r.fixes.splice(i,1); toast(id+' reopened'); }
+  else { r.fixes.push({week:S.currentWeek, date:new Date().toISOString()}); toast(id+' marked fixed'); }
+  save(); render();
+  if(drawerId===id) openDrawer(id);
+}
+function go(v, mode){ view=v; branchFilter=null; search=''; if(mode==='__longest'){sortKey='daysOffline';sortDir=-1;} render(); window.scrollTo(0,0); }
+function goBranch(b){ view='all'; branchFilter=b; search=''; render(); window.scrollTo(0,0); }
+function clearBranch(){ branchFilter=null; render(); }
+function setSort(k){ if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir = (k==='daysOffline'||k==='hoursOffline')?-1:1;} render(); }
+function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('on'); clearTimeout(t._x); t._x=setTimeout(()=>t.classList.remove('on'),2200); }
+
+/* ================= io ================= */
+function handleFile(f){
+  const rd=new FileReader();
+  rd.onload=e=>{
+    try{
+      const {reportDate, assets}=parseReport(new Uint8Array(e.target.result));
+      const rep=ingest(reportDate, assets);
+      view='overview'; branchFilter=null;
+      render();
+      toast(`Loaded ${assets.length} cameras — report ${reportDate}` + (rep.length? ` · ${rep.length} repeat offender${rep.length>1?'s':''} back` : ''));
+    }catch(err){ alert(err.message); }
+  };
+  rd.readAsArrayBuffer(f);
+}
+document.getElementById('btnUpload').onclick=()=>document.getElementById('fileIn').click();
+document.getElementById('fileIn').onchange=e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); e.target.value=''; };
+document.getElementById('btnExport').onclick=()=>{
+  const blob=new Blob([JSON.stringify(S,null,1)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`vi-offline-history-${new Date().toISOString().slice(0,10)}.json`; a.click();
+};
+document.getElementById('btnImport').onclick=()=>document.getElementById('jsonIn').click();
+document.getElementById('jsonIn').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=ev=>{ try{ const d=JSON.parse(ev.target.result); if(!d.assets) throw 0; S=d; save(); render(); toast('History imported'); }catch(_){ alert('Not a valid history export.'); } };
+  rd.readAsText(f); e.target.value='';
+};
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$('#overlay').onclick=closeDrawer;
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDrawer(); });
+
+function wireDrop(){
+  const dz=document.getElementById('dz'); if(!dz) return;
+  ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('hot');}));
+  ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('hot');}));
+  dz.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+}
+render();
+</script>
+</body>
+</html>
