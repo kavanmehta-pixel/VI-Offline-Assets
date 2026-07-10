@@ -77,6 +77,46 @@ def init_db():
         """
     )
     con.commit()
+    # --- migration: backfill snapshots from assets + appearances ---
+    missing = con.execute(
+        "SELECT a.asset, a.week, s.snap "
+        "FROM appearances a "
+        "LEFT JOIN snapshots s ON a.asset=s.asset AND a.week=s.week "
+        "JOIN assets t ON a.asset=t.id "
+        "WHERE s.snap IS NULL"
+    ).fetchall()
+    if missing:
+        import json as _json
+        # build week list for days-offline estimation
+        weeks_list = sorted(set(r[1] for r in missing))
+        week_idx = {w: i for i, w in enumerate(weeks_list)}
+        all_weeks = sorted(
+            r[0] for r in con.execute("SELECT week FROM weeks").fetchall()
+        )
+        latest_idx = {w: i for i, w in enumerate(all_weeks)}
+        latest_week = all_weeks[-1] if all_weeks else None
+        snap_cache = {}
+        for asset, week, _ in missing:
+            if asset not in snap_cache:
+                row = con.execute("SELECT snap FROM assets WHERE id=?", (asset,)).fetchone()
+                snap_cache[asset] = _json.loads(row[0]) if row else {}
+            base = snap_cache[asset]
+            if not base:
+                continue
+            # estimate days offline for this historical week
+            snap = dict(base)
+            if latest_week and week != latest_week:
+                li = latest_idx.get(latest_week, 0)
+                wi = latest_idx.get(week, 0)
+                weeks_back = li - wi
+                est_days = max(1, snap.get("daysOffline", 0) - weeks_back * 7)
+                snap["daysOffline"] = est_days
+                snap["hoursOffline"] = est_days * 24
+            con.execute(
+                "INSERT OR IGNORE INTO snapshots(asset, week, snap) VALUES(?,?,?)",
+                (asset, week, _json.dumps(snap)),
+            )
+        con.commit()
     con.close()
 
 
