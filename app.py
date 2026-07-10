@@ -50,6 +50,12 @@ def init_db():
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS parked(
+            asset TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            parked_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS report_files(
             week TEXT PRIMARY KEY,
             filename TEXT NOT NULL,
@@ -142,8 +148,11 @@ def state():
     for r in d.execute("SELECT * FROM comments ORDER BY ts"):
         if r["asset"] in assets:
             assets[r["asset"]]["comments"].append({"ts": r["ts"], "text": r["text"]})
+    parked = {}
+    for r in d.execute("SELECT * FROM parked"):
+        parked[r["asset"]] = {"reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"]}
     cur = max(weeks.keys()) if weeks else None
-    return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets})
+    return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets, "parked": parked})
 
 
 @app.post("/api/ingest")
@@ -238,6 +247,33 @@ def import_state():
         for c in rec.get("comments") or []:
             d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
                       (aid, c.get("ts") or now(), c.get("text") or ""))
+    d.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/park")
+@require_auth
+def park():
+    p = request.get_json(force=True)
+    aid, reason, note = p.get("id"), p.get("reason", ""), (p.get("note") or "").strip()
+    if not aid or not reason:
+        return jsonify({"error": "id and reason required"}), 400
+    d = db()
+    d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at) VALUES(?,?,?,?)",
+              (aid, reason, note, now()))
+    d.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/unpark")
+@require_auth
+def unpark():
+    p = request.get_json(force=True)
+    aid = p.get("id")
+    if not aid:
+        return jsonify({"error": "id required"}), 400
+    d = db()
+    d.execute("DELETE FROM parked WHERE asset=?", (aid,))
     d.commit()
     return jsonify({"ok": True})
 

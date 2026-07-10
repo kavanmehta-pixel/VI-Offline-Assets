@@ -154,6 +154,20 @@ tr.asset{cursor:pointer}
 .drop .btn2{background:var(--slate);color:#fff;border:none;padding:11px 22px;font-weight:700;font-size:13px;border-radius:3px}
 .drop .fmt{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:14px}
 
+.park-group{margin-bottom:6px}
+.park-reason{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:14px 16px 6px;display:flex;align-items:center;gap:8px}
+.park-reason .ct{font-family:var(--mono);background:var(--line);padding:1px 7px;border-radius:10px;font-size:11px;color:var(--ink)}
+.park-note{font-size:12px;color:var(--muted);padding:0 16px 6px;font-style:italic}
+.park-btn{border:1px solid var(--line);background:#fff;color:var(--muted);font-size:11px;font-weight:700;padding:5px 10px;border-radius:3px;white-space:nowrap}
+.park-btn:hover{border-color:var(--amber);color:var(--amber)}
+.park-btn.active{background:var(--amber-bg);border-color:var(--amber);color:var(--amber)}
+.unpark-btn{border:1px solid var(--line);background:#fff;color:var(--muted);font-size:11px;font-weight:700;padding:5px 10px;border-radius:3px;white-space:nowrap}
+.unpark-btn:hover{border-color:var(--ink);color:var(--ink)}
+.park-select{border:1px solid var(--line);border-radius:3px;padding:7px 10px;font-family:inherit;font-size:12px;width:100%;margin-bottom:6px;background:#fff}
+.park-note-input{width:100%;border:1px solid var(--line);border-radius:3px;padding:7px 10px;font-family:inherit;font-size:12px;resize:vertical;min-height:44px;margin-bottom:8px}
+.park-actions{display:flex;gap:6px;margin-top:6px}
+.park-submit{border:none;background:var(--amber);color:#171A1E;font-weight:700;font-size:12px;padding:7px 14px;border-radius:3px;cursor:pointer}
+.park-submit:hover{background:#B8740A}
 .rpt-row{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid #EFF1ED;gap:14px}
 .rpt-row:last-child{border-bottom:none}
 .rpt-row:hover{background:#F7F8F5}
@@ -198,6 +212,7 @@ input[type=file]{display:none}
     <button data-v="all">All offline <span class="count" id="cAll">0</span></button>
     <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
     <button data-v="trends">Trends</button>
+    <button data-v="known">Known issues <span class="count" id="cKn">0</span></button>
     <button data-v="reports">Reports</button>
   </div>
 </div>
@@ -276,6 +291,14 @@ function weekAssets(){
   return (S.weeks[S.currentWeek].ids||[]).map(id=>S.assets[id]).filter(Boolean);
 }
 function isFixed(rec){ return rec.fixes.some(f=>f.week===S.currentWeek); }
+function isParked(id){ return !!(S.parked&&S.parked[id]); }
+const PARK_REASONS = {
+  'connection':'Connection issues',
+  'install':'Incorrectly installed — client aware',
+  'relocated':'Client relocated camera',
+  'decommission':'Pending decommission',
+  'other':'Other known issue'
+};
 function appearCount(rec){ return rec.appearances.length; }
 function sev(d){ return d>=90?4 : d>=30?3 : d>=14?2 : 1; }
 function sevClass(d){ return 'd'+sev(d); }
@@ -335,15 +358,18 @@ function render(){
   if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
 
   const A = weekAssets();
-  const open = A.filter(r=>!isFixed(r));
-  const fixed = A.filter(isFixed);
-  const pk = A.filter(r=>r.snap.pickles);
+  const active = A.filter(r=>!isParked(r.snap.id));  // exclude parked from main views
+  const parkedList = A.filter(r=>isParked(r.snap.id));
+  const open = active.filter(r=>!isFixed(r));
+  const fixed = active.filter(isFixed);
+  const pk = active.filter(r=>r.snap.pickles);
   const pkOpen = pk.filter(r=>!isFixed(r));
 
   // nav counts
   $('#cPk').textContent = pkOpen.length;
   $('#cAll').textContent = open.length;
   $('#cFix').textContent = fixed.length;
+  $('#cKn').textContent = parkedList.length;
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===view));
 
   // triage strip
@@ -370,14 +396,20 @@ function render(){
     <div class="t-block" onclick="go('repaired')">
       <div class="t-label">Fixed this week</div>
       <div class="t-num" style="color:#6FBF8E">${fixed.length}</div>
-      <div class="t-sub">${pct(fixed.length, A.length)}% cleared</div>
-    </div>`;
+      <div class="t-sub">${pct(fixed.length, active.length)}% cleared</div>
+    </div>
+    ${parkedList.length?`<div class="t-block" onclick="go('known')">
+      <div class="t-label">Known issues</div>
+      <div class="t-num" style="color:#9FB0BE">${parkedList.length}</div>
+      <div class="t-sub">parked &middot; excluded from triage</div>
+    </div>`:''}`;
 
   if(view==='overview') renderOverview(open, A);
   else if(view==='pickles') renderTable(pk, 'Pickles cameras', true);
-  else if(view==='all') renderTable(branchFilter? A.filter(r=>r.snap.branch===branchFilter) : A, branchFilter||'All offline cameras', false);
+  else if(view==='all') renderTable(branchFilter? active.filter(r=>r.snap.branch===branchFilter) : active, branchFilter||'All offline cameras', false);
   else if(view==='repaired') renderRepaired(fixed);
   else if(view==='trends') renderTrends();
+  else if(view==='known') renderKnown(parkedList);
   else if(view==='reports') renderReports();
 }
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
@@ -424,7 +456,7 @@ function renderOverview(open, all){
 }
 
 function rowHtml(r){
-  const a=r.snap, fixed=isFixed(r), n=appearCount(r), notes=r.comments.length;
+  const a=r.snap, fixed=isFixed(r), n=appearCount(r), notes=r.comments.length, parked=isParked(a.id);
   return `<tr class="asset" onclick="openDrawer('${a.id}')">
     <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${n>1?`<span class="rep-flag" title="Appeared in ${n} weekly reports">&times;${n}</span>`:''}${notes?`<span class="note-flag" title="${notes} note(s)">&#9998;${notes}</span>`:''}</td>
     <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
@@ -595,6 +627,48 @@ function trendChart(series){
   </svg>`;
 }
 
+function renderKnown(parkedList){
+  const byReason = {};
+  parkedList.forEach(r=>{
+    const p = S.parked[r.snap.id];
+    const k = p.reason||'other';
+    (byReason[k]=byReason[k]||[]).push(r);
+  });
+  const groups = Object.entries(PARK_REASONS).filter(([k])=>byReason[k]&&byReason[k].length);
+  $('#main').innerHTML = `<div class="card">
+    <div class="tbl-hd"><h2>Known issues — parked cameras</h2>
+      <span class="tally">${parkedList.length} camera${parkedList.length!==1?'s':''} parked &middot; excluded from triage counts</span></div>
+    ${groups.map(([k,label])=>{
+      const items = byReason[k];
+      return `<div class="park-group">
+        <div class="park-reason">${esc(label)} <span class="ct">${items.length}</span></div>
+        <table><tbody>
+        ${items.map(r=>{const a=r.snap, p=S.parked[a.id], n=appearCount(r);
+          return `<tr class="asset" onclick="openDrawer('${a.id}')">
+            <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${n>1?`<span class="rep-flag">&times;${n}</span>`:''}</td>
+            <td><span class="cust">${esc(a.customer)}</span></td>
+            <td>${esc(a.branch)}</td>
+            <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td>
+            <td style="font-size:12px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.note)}">${esc(p.note||'')}</td>
+            <td style="text-align:right"><button class="unpark-btn" onclick="event.stopPropagation();doUnpark('${a.id}')">Return to triage</button></td>
+          </tr>`;}).join('')}
+        </tbody></table></div>`;}).join('')}
+    ${!parkedList.length?'<div style="padding:30px;text-align:center;color:var(--muted)">No cameras parked. Open any camera from the offline list and use <b>Park — known issue</b> to move it here.</div>':''}
+  </div>`;
+}
+function doUnpark(id){
+  api('unpark',{id}).then(()=>{ delete S.parked[id]; render(); toast(id+' returned to triage'); }).catch(()=>toast('Failed — retry'));
+}
+function doPark(id){
+  const reason = document.getElementById('park-reason').value;
+  const note = (document.getElementById('park-note').value||'').trim();
+  if(!reason){ toast('Pick a reason'); return; }
+  api('park',{id, reason, note}).then(()=>{
+    S.parked[id] = {reason, note, parkedAt:new Date().toISOString()};
+    render(); openDrawer(id); toast(id+' parked as known issue');
+  }).catch(()=>toast('Failed — retry'));
+}
+
 async function renderReports(){
   try{
     const reps = await (await fetch('/api/reports')).json();
@@ -649,9 +723,29 @@ function openDrawer(id){
       <div class="dw-sec">History</div>
       ${events.map(e=>`<div class="hist-item ${e.cls}"><span class="ts">${esc(String(e.ts).slice(0,16).replace('T',' '))}</span>${esc(e.txt)}</div>`).join('') || '<div style="color:var(--muted);font-size:12.5px">No history yet.</div>'}
     </div>
-    <div class="dw-foot">
-      <button class="save" onclick="saveNote()">Save note</button>
-      <button class="fixbtn ${fixed?'done':''}" onclick="toggleFix('${a.id}');openDrawer('${a.id}')">${fixed?'&#10003; Fixed — undo':'Mark fixed'}</button>
+    <div class="dw-foot" style="flex-direction:column;gap:10px">
+      <div style="display:flex;gap:8px;width:100%">
+        <button class="save" onclick="saveNote()">Save note</button>
+        <button class="fixbtn ${fixed?'done':''}" onclick="toggleFix('${a.id}');openDrawer('${a.id}')" style="flex:1">${fixed?'&#10003; Fixed — undo':'Mark fixed'}</button>
+      </div>
+      ${isParked(a.id)?`
+        <div style="display:flex;align-items:center;gap:8px;width:100%">
+          <span style="font-size:11px;color:var(--amber);font-weight:700;flex:1">&#9888; Parked: ${esc(PARK_REASONS[S.parked[a.id].reason]||S.parked[a.id].reason)}</span>
+          <button class="unpark-btn" onclick="doUnpark('${a.id}');openDrawer('${a.id}')">Return to triage</button>
+        </div>
+      `:`
+        <details style="width:100%">
+          <summary style="font-size:11px;font-weight:700;color:var(--muted);cursor:pointer;padding:4px 0">Park as known issue &rarr;</summary>
+          <div style="margin-top:6px">
+            <select id="park-reason" class="park-select">
+              <option value="">Select reason…</option>
+              ${Object.entries(PARK_REASONS).map(([k,v])=>'<option value="'+k+'">'+esc(v)+'</option>').join('')}
+            </select>
+            <textarea id="park-note" class="park-note-input" placeholder="Optional note — e.g. client contacted 3 Jul, aware camera is in shade"></textarea>
+            <button class="park-submit" onclick="doPark('${a.id}')">Park this camera</button>
+          </div>
+        </details>
+      `}
     </div>`;
   $('#overlay').classList.add('on'); $('#drawer').classList.add('on');
 }
