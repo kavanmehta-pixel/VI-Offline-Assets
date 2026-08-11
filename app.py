@@ -7,7 +7,11 @@ from functools import wraps
 from flask import Flask, g, jsonify, request, send_from_directory, make_response
 
 DB_PATH = os.environ.get("DB_PATH", "vi_offline.db")
-PASSCODE = os.environ.get("APP_PASSCODE", "")  # shared access code — set in Railway env vars
+# The sign-in gate is ALWAYS on. Setting APP_PASSCODE in Railway overrides this default
+# and is the recommended way to rotate the password without a code change.
+DEFAULT_PASSCODE = "Visioni2026!"
+PASSCODE = os.environ.get("APP_PASSCODE") or DEFAULT_PASSCODE
+USING_DEFAULT_PASSCODE = not os.environ.get("APP_PASSCODE")
 ALLOWED_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "@visioni").lower()  # substring match on email
 
 app = Flask(__name__, static_folder=None)
@@ -190,12 +194,10 @@ def valid_email(e):
     local, _, domain = e.partition("@")
     if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
         return False
-    return ALLOWED_DOMAIN in e if ALLOWED_DOMAIN else True
+    return ALLOWED_DOMAIN in e if ALLOWED_DOMAIN else True  # domain gate
 
 
 def authed():
-    if not PASSCODE:
-        return True
     if request.cookies.get("vi_pass") != PASSCODE:
         return False
     return valid_email(request.cookies.get("vi_user", ""))
@@ -218,7 +220,7 @@ def index():
 
 @app.get("/api/auth")
 def auth_status():
-    return jsonify({"required": bool(PASSCODE), "ok": authed(),
+    return jsonify({"required": True, "ok": authed(),
                     "email": request.cookies.get("vi_user", "")})
 
 
@@ -231,7 +233,7 @@ def auth_login():
         return jsonify({"ok": False,
                         "error": f"Access is limited to {ALLOWED_DOMAIN} email addresses."
                         if ALLOWED_DOMAIN else "Enter a valid email address."}), 400
-    if PASSCODE and code != PASSCODE:
+    if code != PASSCODE:
         return jsonify({"ok": False, "error": "Incorrect password."}), 401
     d = db()
     if d.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
@@ -439,7 +441,8 @@ def health():
         except sqlite3.Error:
             counts[t] = None
     st.update({
-        "passcodeSet": bool(PASSCODE),
+        "passcodeSet": True,
+        "usingDefaultPasscode": USING_DEFAULT_PASSCODE,
         "allowedDomain": ALLOWED_DOMAIN or None,
         "dbCreatedAt": meta.get("created_at"),
         "bootCount": int(meta.get("boot_count", 0) or 0),

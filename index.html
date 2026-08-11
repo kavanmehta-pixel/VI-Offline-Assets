@@ -198,6 +198,7 @@ tr.asset{cursor:pointer}
 .rpt-cur{background:var(--green-bg);font-size:9px;font-weight:800;letter-spacing:.08em;color:var(--green);padding:2px 6px;border-radius:2px}
 .warnbar{background:var(--red);color:#fff;padding:11px 20px;font-size:13px;display:none;align-items:flex-start;gap:12px}
 .warnbar.on{display:flex}
+.warnbar.advisory{background:var(--amber)}
 .warnbar b{font-weight:800}
 .warnbar .msg{flex:1;line-height:1.5}
 .warnbar code{background:rgba(255,255,255,.18);padding:1px 6px;border-radius:2px;font-family:var(--mono);font-size:12px}
@@ -963,8 +964,9 @@ async function checkHealth(){
     const h = await (await fetch('/api/health')).json();
     const probs = [];
     if(!h.persistent) probs.push(`<b>Data will be lost on the next deploy.</b> The database is on the container's temporary disk (<code>${esc(h.dbPath||'?')}</code>), not a Railway volume. Attach a Volume mounted at <code>/data</code> and set <code>DB_PATH=/data/vi_offline.db</code>.`);
-    if(!h.passcodeSet) probs.push(`<b>This board is unprotected.</b> Anyone with the URL can view and edit it. Set <code>APP_PASSCODE</code> in Railway to enable the sign-in gate.`);
+    if(h.usingDefaultPasscode) probs.push(`<b>Using the built-in default password.</b> Sign-in is active, but set <code>APP_PASSCODE</code> in Railway to rotate it.`);
     const bar = $('#warnbar');
+    bar.classList.toggle('advisory', probs.length===1 && h.usingDefaultPasscode && h.persistent);
     if(probs.length){
       bar.innerHTML = `<span class="msg">${probs.join('<br>')}</span><button class="x" onclick="this.parentNode.classList.remove('on')">&times;</button>`;
       bar.classList.add('on');
