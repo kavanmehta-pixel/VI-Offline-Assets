@@ -7,7 +7,7 @@ from functools import wraps
 from flask import Flask, g, jsonify, request, send_from_directory, make_response
 
 DB_PATH = os.environ.get("DB_PATH", "vi_offline.db")
-PASSCODE = os.environ.get("APP_PASSCODE", "")  # optional shared access code
+PASSCODE = os.environ.get("APP_PASSCODE", "Visioni2026!")  # optional shared access code
 
 app = Flask(__name__, static_folder=None)
 
@@ -120,6 +120,10 @@ def init_db():
     con.close()
 
 
+def cur_user():
+    return request.cookies.get('vi_user', 'unknown')
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -147,15 +151,21 @@ def index():
 
 @app.get("/api/auth")
 def auth_status():
-    return jsonify({"required": bool(PASSCODE), "ok": authed()})
+    return jsonify({"required": bool(PASSCODE), "ok": authed(),
+                    "email": request.cookies.get("vi_user", "")})
 
 
 @app.post("/api/auth")
 def auth_login():
-    code = (request.get_json(silent=True) or {}).get("code", "")
+    p = request.get_json(silent=True) or {}
+    code = p.get("code", "")
+    email = (p.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify({"ok": False, "error": "Valid email required"}), 400
     if not PASSCODE or code == PASSCODE:
-        resp = make_response(jsonify({"ok": True}))
+        resp = make_response(jsonify({"ok": True, "email": email}))
         resp.set_cookie("vi_pass", code, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
+        resp.set_cookie("vi_user", email, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
         return resp
     return jsonify({"ok": False}), 401
 
@@ -241,6 +251,8 @@ def fix():
     d = db()
     if on:
         d.execute("INSERT OR REPLACE INTO fixes(asset, week, ts) VALUES(?,?,?)", (aid, week, now()))
+        d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
+                  (aid, now(), f"[{cur_user()}] marked fixed"))
     else:
         d.execute("DELETE FROM fixes WHERE asset=? AND week=?", (aid, week))
     d.commit()
@@ -256,9 +268,11 @@ def note():
         return jsonify({"error": "id and text required"}), 400
     ts = now()
     d = db()
-    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)", (aid, ts, text))
+    user = cur_user()
+    stored = f"[{user}] {text}"
+    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)", (aid, ts, stored))
     d.commit()
-    return jsonify({"ok": True, "ts": ts})
+    return jsonify({"ok": True, "ts": ts, "text": stored})
 
 
 @app.post("/api/import")
@@ -299,8 +313,11 @@ def park():
     if not aid or not reason:
         return jsonify({"error": "id and reason required"}), 400
     d = db()
+    user = cur_user()
     d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at) VALUES(?,?,?,?)",
-              (aid, reason, note, now()))
+              (aid, reason, f"[{user}] {note}" if note else f"[{user}]", now()))
+    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
+              (aid, now(), f"[{user}] parked: {reason}" + (f" — {note}" if note else "")))
     d.commit()
     return jsonify({"ok": True})
 
@@ -314,8 +331,18 @@ def unpark():
         return jsonify({"error": "id required"}), 400
     d = db()
     d.execute("DELETE FROM parked WHERE asset=?", (aid,))
+    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
+              (aid, now(), f"[{cur_user()}] returned to triage"))
     d.commit()
     return jsonify({"ok": True})
+
+
+@app.post("/api/logout")
+def logout():
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie("vi_pass")
+    resp.delete_cookie("vi_user")
+    return resp
 
 
 @app.get("/api/reports")

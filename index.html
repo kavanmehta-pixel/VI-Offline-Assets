@@ -196,6 +196,8 @@ input[type=file]{display:none}
       <button class="btn" id="btnExport">Export history</button>
       <button class="btn" id="btnImport">Import</button>
       <button class="btn primary" id="btnUpload">Upload weekly report</button>
+      <span id="userBadge" style="font-family:var(--mono);font-size:11px;color:#9FB0BE"></span>
+      <button class="btn" id="btnLogout" style="display:none" onclick="doLogout()">Sign out</button>
       <input type="file" id="fileIn" accept=".xlsx,.xls,.csv">
       <input type="file" id="jsonIn" accept=".json">
     </div>
@@ -355,6 +357,8 @@ function render(){
   $('#nav').style.display = has?'flex':'none';
   $('#triage').style.display = has?'block':'none';
   $('#weekof').innerHTML = has? `Report: <b>${S.currentWeek}</b>` : '';
+  if(currentUser){ $('#userBadge').textContent=currentUser; $('#btnLogout').style.display=''; }
+  else { $('#userBadge').textContent=''; $('#btnLogout').style.display='none'; }
   if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
 
   const A = weekAssets();
@@ -657,16 +661,15 @@ function renderKnown(parkedList){
   </div>`;
 }
 function doUnpark(id){
-  api('unpark',{id}).then(()=>{ delete S.parked[id]; render(); toast(id+' returned to triage'); }).catch(()=>toast('Failed — retry'));
+  api('unpark',{id}).then(()=>refresh().then(()=>{ render(); toast(id+' returned to triage'); })).catch(()=>toast('Failed — retry'));
 }
 function doPark(id){
   const reason = document.getElementById('park-reason').value;
   const note = (document.getElementById('park-note').value||'').trim();
   if(!reason){ toast('Pick a reason'); return; }
-  api('park',{id, reason, note}).then(()=>{
-    S.parked[id] = {reason, note, parkedAt:new Date().toISOString()};
-    render(); openDrawer(id); toast(id+' parked as known issue');
-  }).catch(()=>toast('Failed — retry'));
+  api('park',{id, reason, note}).then(()=>
+    refresh().then(()=>{ render(); openDrawer(id); toast(id+' parked as known issue'); })
+  ).catch(()=>toast('Failed — retry'));
 }
 
 async function renderReports(){
@@ -754,7 +757,7 @@ function saveNote(){
   const t=$('#cbox').value.trim(); if(!t||!drawerId) return;
   const id=drawerId;
   api('note',{id, text:t}).then(res=>{
-    S.assets[id].comments.push({ts:res.ts, text:t});
+    S.assets[id].comments.push({ts:res.ts, text:res.text||t});
     if(drawerId===id) openDrawer(id);
     render(); toast('Note saved');
   }).catch(()=>toast('Save failed — retry'));
@@ -769,7 +772,7 @@ function toggleFix(id){
   else { r.fixes.splice(i,1); toast(id+' reopened'); }
   render();
   if(drawerId===id) openDrawer(id);
-  api('fix',{id, week:S.currentWeek, on}).catch(()=>{ toast('Save failed — refresh and retry'); });
+  api('fix',{id, week:S.currentWeek, on}).then(()=>refresh().then(()=>{render(); if(drawerId===id) openDrawer(id);})).catch(()=>{ toast('Save failed — refresh and retry'); });
 }
 function go(v, mode){ view=v; branchFilter=null; search=''; if(mode==='__longest'){sortKey='daysOffline';sortDir=-1;} render(); window.scrollTo(0,0); }
 function goBranch(b){ view='all'; branchFilter=b; search=''; render(); window.scrollTo(0,0); }
@@ -822,28 +825,38 @@ function wireDrop(){
   ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('hot');}));
   dz.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
 }
+let currentUser = '';
 function showGate(){
   $('#nav').style.display='none'; $('#triage').style.display='none';
   $('#main').innerHTML = `<div class="drop" style="padding:60px 30px">
-    <h3>Enter access code</h3>
-    <p>This board is restricted. Enter the VI access code to continue.</p>
-    <div style="display:flex;gap:8px;justify-content:center">
-      <input id="pc" type="password" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:14px;width:200px" placeholder="Access code">
-      <button class="btn2" onclick="login()">Enter</button>
+    <h3>Sign in to VI Offline Assets</h3>
+    <p>Enter your email and the shared access password to continue.</p>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;max-width:300px;margin:0 auto">
+      <input id="em" type="email" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--sans);font-size:13px;width:100%" placeholder="Email address" autocomplete="email">
+      <input id="pc" type="password" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:14px;width:100%" placeholder="Password" autocomplete="current-password">
+      <button class="btn2" onclick="login()" style="width:100%;padding:11px">Sign in</button>
     </div><div id="pcerr" style="color:var(--red);font-size:12px;margin-top:10px"></div></div>`;
-  const pc=document.getElementById('pc');
-  pc.addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
-  pc.focus();
+  const em=document.getElementById('em');
+  document.getElementById('pc').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+  em.focus();
 }
 async function login(){
+  const email=document.getElementById('em').value.trim();
   const code=document.getElementById('pc').value;
-  const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
-  if(r.ok){ boot(); } else { document.getElementById('pcerr').textContent='Wrong code.'; }
+  if(!email||!email.includes('@')){ document.getElementById('pcerr').textContent='Enter a valid email.'; return; }
+  const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,code})});
+  if(r.ok){ const d=await r.json(); currentUser=d.email||email; boot(); }
+  else { document.getElementById('pcerr').textContent='Wrong password.'; }
+}
+async function doLogout(){
+  await fetch('/api/logout',{method:'POST'});
+  currentUser=''; showGate();
 }
 async function boot(){
   try{
     const a = await (await fetch('/api/auth')).json();
     if(a.required && !a.ok){ showGate(); return; }
+    currentUser = a.email || '';
     await refresh(); render();
   }catch(e){ $('#main').innerHTML='<div class="drop"><h3>Server unreachable</h3><p>'+esc(e.message)+'</p></div>'; }
 }
