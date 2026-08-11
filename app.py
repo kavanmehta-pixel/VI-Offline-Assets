@@ -8,6 +8,7 @@ from flask import Flask, g, jsonify, request, send_from_directory, make_response
 
 DB_PATH = os.environ.get("DB_PATH", "vi_offline.db")
 PASSCODE = os.environ.get("APP_PASSCODE", "")  # shared access code — set in Railway env vars
+ALLOWED_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "@visioni").lower()  # substring match on email
 
 app = Flask(__name__, static_folder=None)
 
@@ -50,6 +51,14 @@ def init_db():
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS activity(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            email TEXT NOT NULL,
+            action TEXT NOT NULL,
+            asset TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS users(
             email TEXT PRIMARY KEY,
             first_seen TEXT NOT NULL,
@@ -78,11 +87,18 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asset TEXT NOT NULL,
             ts TEXT NOT NULL,
-            text TEXT NOT NULL
+            text TEXT NOT NULL,
+            by_email TEXT NOT NULL DEFAULT ''
         );
         """
     )
     con.commit()
+    # --- migration: attribution column on comments (safe on re-deploy) ---
+    try:
+        con.execute("ALTER TABLE comments ADD COLUMN by_email TEXT NOT NULL DEFAULT ''")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass  # column already present
     # --- migration: backfill snapshots from assets + appearances ---
     missing = con.execute(
         "SELECT a.asset, a.week, s.snap "
@@ -134,12 +150,24 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def log_action(action, asset="", detail=""):
+    """Append to the audit trail. Never raises — logging must not break a write."""
+    try:
+        db().execute(
+            "INSERT INTO activity(ts, email, action, asset, detail) VALUES(?,?,?,?,?)",
+            (now(), cur_user(), action, asset, detail))
+    except sqlite3.Error:
+        pass
+
+
 def valid_email(e):
-    e = (e or "").strip()
+    e = (e or "").strip().lower()
     if len(e) < 6 or " " in e or e.count("@") != 1:
         return False
     local, _, domain = e.partition("@")
-    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+    if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+        return False
+    return ALLOWED_DOMAIN in e if ALLOWED_DOMAIN else True
 
 
 def authed():
@@ -177,7 +205,9 @@ def auth_login():
     code = p.get("code", "")
     email = (p.get("email") or "").strip().lower()
     if not valid_email(email):
-        return jsonify({"ok": False, "error": "Enter a valid email address."}), 400
+        return jsonify({"ok": False,
+                        "error": f"Access is limited to {ALLOWED_DOMAIN} email addresses."
+                        if ALLOWED_DOMAIN else "Enter a valid email address."}), 400
     if PASSCODE and code != PASSCODE:
         return jsonify({"ok": False, "error": "Incorrect password."}), 401
     d = db()
@@ -186,6 +216,9 @@ def auth_login():
     else:
         d.execute("INSERT INTO users(email, first_seen, last_seen, logins) VALUES(?,?,?,1)",
                   (email, now(), now()))
+    d.commit()
+    d.execute("INSERT INTO activity(ts, email, action, asset, detail) VALUES(?,?,?,?,?)",
+              (now(), email, "signin", "", ""))
     d.commit()
     resp = make_response(jsonify({"ok": True, "email": email}))
     resp.set_cookie("vi_pass", code, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
@@ -220,7 +253,9 @@ def state():
             assets[r["asset"]]["fixes"].append({"week": r["week"], "date": r["ts"]})
     for r in d.execute("SELECT * FROM comments ORDER BY ts"):
         if r["asset"] in assets:
-            assets[r["asset"]]["comments"].append({"ts": r["ts"], "text": r["text"]})
+            assets[r["asset"]]["comments"].append({
+                "ts": r["ts"], "text": r["text"],
+                "by": (r["by_email"] if "by_email" in r.keys() else "") or ""})
     parked = {}
     for r in d.execute("SELECT * FROM parked"):
         parked[r["asset"]] = {"reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"]}
@@ -260,6 +295,8 @@ def ingest():
         latest = d.execute("SELECT MAX(week) w FROM appearances WHERE asset=?", (aid,)).fetchone()["w"]
         if latest == week:
             d.execute("INSERT OR REPLACE INTO assets(id, snap) VALUES(?,?)", (aid, json.dumps(a)))
+    log_action("upload", "", f"report {week} — {len(rows)} cameras"
+               + (f", {len(reappeared)} repeat" if reappeared else ""))
     d.commit()
     return jsonify({"ok": True, "week": week, "count": len(rows), "reappeared": reappeared})
 
@@ -274,10 +311,10 @@ def fix():
     d = db()
     if on:
         d.execute("INSERT OR REPLACE INTO fixes(asset, week, ts) VALUES(?,?,?)", (aid, week, now()))
-        d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
-                  (aid, now(), f"[{cur_user()}] marked fixed"))
+        log_action("fixed", aid, f"report {week}")
     else:
         d.execute("DELETE FROM fixes WHERE asset=? AND week=?", (aid, week))
+        log_action("reopened", aid, f"report {week}")
     d.commit()
     return jsonify({"ok": True})
 
@@ -292,10 +329,11 @@ def note():
     ts = now()
     d = db()
     user = cur_user()
-    stored = f"[{user}] {text}"
-    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)", (aid, ts, stored))
+    d.execute("INSERT INTO comments(asset, ts, text, by_email) VALUES(?,?,?,?)",
+              (aid, ts, text, user))
+    log_action("note", aid, text[:180])
     d.commit()
-    return jsonify({"ok": True, "ts": ts, "text": stored})
+    return jsonify({"ok": True, "ts": ts, "text": text, "by": user})
 
 
 @app.post("/api/import")
@@ -338,9 +376,8 @@ def park():
     d = db()
     user = cur_user()
     d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at) VALUES(?,?,?,?)",
-              (aid, reason, f"[{user}] {note}" if note else f"[{user}]", now()))
-    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
-              (aid, now(), f"[{user}] parked: {reason}" + (f" — {note}" if note else "")))
+              (aid, reason, note, now()))
+    log_action("parked", aid, reason + (f" — {note}" if note else ""))
     d.commit()
     return jsonify({"ok": True})
 
@@ -354,8 +391,7 @@ def unpark():
         return jsonify({"error": "id required"}), 400
     d = db()
     d.execute("DELETE FROM parked WHERE asset=?", (aid,))
-    d.execute("INSERT INTO comments(asset, ts, text) VALUES(?,?,?)",
-              (aid, now(), f"[{cur_user()}] returned to triage"))
+    log_action("unparked", aid, "returned to triage")
     d.commit()
     return jsonify({"ok": True})
 
@@ -366,6 +402,20 @@ def logout():
     resp.delete_cookie("vi_pass")
     resp.delete_cookie("vi_user")
     return resp
+
+
+@app.get("/api/activity")
+@require_auth
+def list_activity():
+    try:
+        limit = min(int(request.args.get("limit", 300)), 1000)
+    except ValueError:
+        limit = 300
+    d = db()
+    rows = d.execute(
+        "SELECT * FROM activity ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return jsonify([{"ts": r["ts"], "email": r["email"], "action": r["action"],
+                     "asset": r["asset"], "detail": r["detail"]} for r in rows])
 
 
 @app.get("/api/users")

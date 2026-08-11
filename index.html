@@ -33,10 +33,6 @@ header{background:var(--slate);color:#fff}
 .btn.primary{background:var(--hazard);border-color:var(--hazard);color:#171A1E}
 .btn.primary:hover{background:#E5B41E}
 .weekof{font-family:var(--mono);font-size:12px;color:#9FB0BE}
-.whoami{font-family:var(--mono);font-size:11px;color:#9FB0BE;display:flex;align-items:center;gap:6px}
-.whoami b{color:#DDE5EA;font-weight:600}
-.whoami button{background:none;border:none;color:#7E909E;font-size:11px;text-decoration:underline;padding:0;font-family:var(--mono)}
-.whoami button:hover{color:#DDE5EA}
 .weekof b{color:#fff}
 
 /* ---------- triage strip ---------- */
@@ -172,6 +168,25 @@ tr.asset{cursor:pointer}
 .park-actions{display:flex;gap:6px;margin-top:6px}
 .park-submit{border:none;background:var(--amber);color:#171A1E;font-weight:700;font-size:12px;padding:7px 14px;border-radius:3px;cursor:pointer}
 .park-submit:hover{background:#B8740A}
+.act-row{display:flex;align-items:baseline;padding:8px 16px;border-bottom:1px solid #EFF1ED;gap:12px;font-size:13px}
+.act-row:last-child{border-bottom:none}
+.act-row:hover{background:#F7F8F5}
+.act-ts{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:118px}
+.act-who{font-family:var(--mono);font-size:11.5px;font-weight:600;min-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-tag{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:2px;min-width:74px;text-align:center}
+.act-fixed{background:var(--green-bg);color:var(--green)}
+.act-reopened{background:var(--amber-bg);color:var(--amber)}
+.act-note{background:#EDEFEA;color:#4B5560}
+.act-parked{background:var(--orange-bg);color:var(--orange)}
+.act-unparked{background:#EDEFEA;color:#4B5560}
+.act-upload{background:#E4E9F2;color:#2E4A7D}
+.act-signin{background:#F0F0EE;color:#7A8390}
+.act-body{flex:1;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-body .a{font-family:var(--mono);font-weight:600}
+.act-body .d{color:var(--muted)}
+.act-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.act-filters select{border:1px solid var(--line);border-radius:3px;padding:6px 10px;font-family:var(--mono);font-size:12px;background:#fff}
+.by-tag{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:block;margin-top:3px}
 .rpt-row{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid #EFF1ED;gap:14px}
 .rpt-row:last-child{border-bottom:none}
 .rpt-row:hover{background:#F7F8F5}
@@ -197,7 +212,6 @@ input[type=file]{display:none}
     </div>
     <div class="hd-actions">
       <span class="weekof" id="weekof"></span>
-      <span class="whoami" id="whoami"></span>
       <button class="btn" id="btnExport">Export history</button>
       <button class="btn" id="btnImport">Import</button>
       <button class="btn primary" id="btnUpload">Upload weekly report</button>
@@ -221,6 +235,7 @@ input[type=file]{display:none}
     <button data-v="trends">Trends</button>
     <button data-v="known">Known issues <span class="count" id="cKn">0</span></button>
     <button data-v="reports">Reports</button>
+    <button data-v="activity">Activity log</button>
   </div>
 </div>
 
@@ -362,8 +377,6 @@ function render(){
   $('#nav').style.display = has?'flex':'none';
   $('#triage').style.display = has?'block':'none';
   $('#weekof').innerHTML = has? `Report: <b>${S.currentWeek}</b>` : '';
-  $('#whoami').innerHTML = currentUser
-    ? `<b>${esc(currentUser)}</b> <button onclick="doLogout()">Sign out</button>` : '';
   if(currentUser){ $('#userBadge').textContent=currentUser; $('#btnLogout').style.display=''; }
   else { $('#userBadge').textContent=''; $('#btnLogout').style.display='none'; }
   if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
@@ -422,6 +435,7 @@ function render(){
   else if(view==='trends') renderTrends();
   else if(view==='known') renderKnown(parkedList);
   else if(view==='reports') renderReports();
+  else if(view==='activity') renderActivity();
 }
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
 function wowDelta(){
@@ -679,6 +693,45 @@ function doPark(id){
   ).catch(()=>toast('Failed — retry'));
 }
 
+let actUser='', actAction='';
+async function renderActivity(){
+  $('#main').innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--muted)">Loading activity…</div>';
+  try{
+    const log = await (await fetch('/api/activity?limit=500')).json();
+    const users = [...new Set(log.map(r=>r.email).filter(Boolean))].sort();
+    const actions = [...new Set(log.map(r=>r.action))].sort();
+    const rows = log.filter(r=>(!actUser||r.email===actUser) && (!actAction||r.action===actAction));
+    const LABEL = {fixed:'Fixed', reopened:'Reopened', note:'Note', parked:'Parked',
+                   unparked:'Unparked', upload:'Upload', signin:'Signed in'};
+    $('#main').innerHTML = `<div class="card">
+      <div class="tbl-hd">
+        <div style="display:flex;align-items:center;gap:14px">
+          <h2>Activity log</h2>
+          <span class="tally">${rows.length} of ${log.length} event${log.length!==1?'s':''}</span>
+        </div>
+        <div class="act-filters">
+          <select onchange="actUser=this.value;render()">
+            <option value="">All users</option>
+            ${users.map(u=>`<option value="${esc(u)}" ${u===actUser?'selected':''}>${esc(u)}</option>`).join('')}
+          </select>
+          <select onchange="actAction=this.value;render()">
+            <option value="">All actions</option>
+            ${actions.map(a=>`<option value="${esc(a)}" ${a===actAction?'selected':''}>${esc(LABEL[a]||a)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      ${rows.length? rows.map(r=>`
+        <div class="act-row" ${r.asset?`onclick="openDrawer('${esc(r.asset)}')" style="cursor:pointer"`:''}>
+          <span class="act-ts">${esc(r.ts.slice(0,16).replace('T',' '))}</span>
+          <span class="act-tag act-${esc(r.action)}">${esc(LABEL[r.action]||r.action)}</span>
+          <span class="act-who">${esc(r.email||'—')}</span>
+          <span class="act-body">${r.asset?`<span class="a">${esc(r.asset)}</span> `:''}<span class="d">${esc(r.detail||'')}</span></span>
+        </div>`).join('') : '<div style="padding:30px;text-align:center;color:var(--muted)">No matching activity.</div>'}
+    </div>
+    <div class="foot-note">Every fix, note, park and upload is recorded against the signed-in user. Most recent first, last 500 events.</div>`;
+  }catch(e){ $('#main').innerHTML='<div class="card" style="padding:30px;color:var(--red)">Failed to load activity: '+esc(e.message)+'</div>'; }
+}
+
 async function renderReports(){
   try{
     const reps = await (await fetch('/api/reports')).json();
@@ -706,7 +759,7 @@ function openDrawer(id){
   const events=[];
   r.appearances.forEach(w=>events.push({ts:w, cls:'appear', txt:`Appeared on weekly report ${w}`}));
   r.fixes.forEach(f=>events.push({ts:f.date, cls:'fix', txt:`Marked fixed (report ${f.week})`}));
-  r.comments.forEach(c=>events.push({ts:c.ts, cls:'', txt:c.text}));
+  r.comments.forEach(c=>events.push({ts:c.ts, cls:'', txt:c.text, by:c.by||''}));
   events.sort((x,y)=>String(y.ts).localeCompare(String(x.ts)));
   $('#drawer').innerHTML = `
     <div class="dw-hd" style="position:relative">
@@ -731,7 +784,7 @@ function openDrawer(id){
       <div class="dw-sec">Add note</div>
       <textarea class="cbox" id="cbox" placeholder="e.g. battery replaced, camera in full shade, client moved unit — notes persist and resurface if this camera comes back"></textarea>
       <div class="dw-sec">History</div>
-      ${events.map(e=>`<div class="hist-item ${e.cls}"><span class="ts">${esc(String(e.ts).slice(0,16).replace('T',' '))}</span>${esc(e.txt)}</div>`).join('') || '<div style="color:var(--muted);font-size:12.5px">No history yet.</div>'}
+      ${events.map(e=>`<div class="hist-item ${e.cls}"><span class="ts">${esc(String(e.ts).slice(0,16).replace('T',' '))}</span>${esc(e.txt)}${e.by?`<span class="by-tag">— ${esc(e.by)}</span>`:''}</div>`).join('') || '<div style="color:var(--muted);font-size:12.5px">No history yet.</div>'}
     </div>
     <div class="dw-foot" style="flex-direction:column;gap:10px">
       <div style="display:flex;gap:8px;width:100%">
@@ -764,7 +817,7 @@ function saveNote(){
   const t=$('#cbox').value.trim(); if(!t||!drawerId) return;
   const id=drawerId;
   api('note',{id, text:t}).then(res=>{
-    S.assets[id].comments.push({ts:res.ts, text:res.text||t});
+    S.assets[id].comments.push({ts:res.ts, text:res.text||t, by:res.by||currentUser});
     if(drawerId===id) openDrawer(id);
     render(); toast('Note saved');
   }).catch(()=>toast('Save failed — retry'));
@@ -835,10 +888,11 @@ function wireDrop(){
 let currentUser = '';
 function showGate(){
   $('#nav').style.display='none'; $('#triage').style.display='none';
-  $('#whoami').innerHTML=''; $('#weekof').innerHTML='';
+  $('#weekof').innerHTML=''; $('#userBadge').textContent='';
+  $('#btnLogout').style.display='none';
   $('#main').innerHTML = `<div class="drop" style="padding:60px 30px">
     <h3>Sign in to VI Offline Assets</h3>
-    <p>Enter your email and the shared access password to continue.</p>
+    <p>Enter your Vision Intelligence email address and the shared access password to continue.</p>
     <div style="display:flex;flex-direction:column;align-items:center;gap:8px;max-width:300px;margin:0 auto">
       <input id="em" type="email" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--sans);font-size:13px;width:100%" placeholder="Email address" autocomplete="email">
       <input id="pc" type="password" style="border:1px solid var(--line);border-radius:3px;padding:10px 12px;font-family:var(--mono);font-size:14px;width:100%" placeholder="Password" autocomplete="current-password">

@@ -10,10 +10,15 @@ Flask + SQLite; all fixes, notes and history persist server-side so every branch
 4. Deploy
 
 ## Access control
-Sign-in requires an email address plus the shared password from the `APP_PASSCODE` env var.
+Sign-in requires a Vision Intelligence email address plus the shared password.
+
+Env vars: `APP_PASSCODE` (shared password) and `ALLOWED_EMAIL_DOMAIN` (default `@visioni`).
+Neither is stored in this repo. Set both in Railway.
 The password is never stored in this repo. Emails are recorded in the `users` table and
 attributed to every fix, note, and park action, so the history shows who did what.
-`GET /api/users` returns the access roster.
+Every sign-in, upload, fix, reopen, note, park and unpark is written to the `activity`
+table against the signed-in email and shown in the **Activity log** tab, filterable by
+user and action. `GET /api/users` returns the access roster; `GET /api/activity` the log.
 
 ## Analytics
 - **Per-week snapshots** — every upload stores that week's full camera state; the board always renders the newest report date, so historical uploads merge into history without touching the front view.
