@@ -3,6 +3,17 @@
 Shared self-serve dashboard for branch triage of cameras offline >168 hours.
 Flask + SQLite; all fixes, notes and history persist server-side so every branch sees one live board.
 
+## ⚠ Required Railway configuration
+Without **all three** of these the app loses every upload on each redeploy and sits open to the public URL.
+`/api/health` reports the live status and the app shows a red banner if either is wrong.
+
+| Setting | Value | Why |
+|---|---|---|
+| Volume | mounted at `/data` | SQLite lives here; container disk is wiped on every deploy |
+| `DB_PATH` | `/data/vi_offline.db` | points SQLite at the volume |
+| `APP_PASSCODE` | the shared password | without it there is no sign-in gate at all |
+| `ALLOWED_EMAIL_DOMAIN` | `@visioni` (default) | restricts sign-in to VI addresses |
+
 ## Deploy (Railway)
 1. New Project -> Deploy from GitHub repo -> `kavanmehta-pixel/vi-offline-assets`
 2. Env vars: `DB_PATH=/data/vi_offline.db`, `APP_PASSCODE=<shared password>` to gate access (required — leaving it unset makes the board open)

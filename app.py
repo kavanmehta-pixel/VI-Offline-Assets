@@ -30,6 +30,7 @@ def close_db(_):
 
 def init_db():
     con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row  # rows must be dict-like for the migrations below
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS weeks(
@@ -50,6 +51,10 @@ def init_db():
             week TEXT NOT NULL,
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
+        );
+        CREATE TABLE IF NOT EXISTS meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS activity(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,7 +144,25 @@ def init_db():
                 (asset, week, _json.dumps(snap)),
             )
         con.commit()
+    # --- boot tracking: proves whether the DB survives redeploys ---
+    row = con.execute("SELECT value FROM meta WHERE key='created_at'").fetchone()
+    if not row:
+        con.execute("INSERT INTO meta(key, value) VALUES('created_at', ?)", (now(),))
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('boot_count', '1')")
+    else:
+        b = con.execute("SELECT value FROM meta WHERE key='boot_count'").fetchone()
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('boot_count', ?)",
+                    (str(int(b["value"]) + 1) if b else "1",))
+    con.commit()
     con.close()
+
+
+def storage_status():
+    """Is the SQLite file on a persistent volume, or ephemeral container disk?"""
+    mount = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "")
+    db_abs = os.path.abspath(DB_PATH)
+    persistent = bool(mount) and db_abs.startswith(os.path.abspath(mount))
+    return {"dbPath": db_abs, "volumeMount": mount or None, "persistent": persistent}
 
 
 def cur_user():
@@ -402,6 +425,27 @@ def logout():
     resp.delete_cookie("vi_pass")
     resp.delete_cookie("vi_user")
     return resp
+
+
+@app.get("/api/health")
+def health():
+    st = storage_status()
+    d = db()
+    meta = {r["key"]: r["value"] for r in d.execute("SELECT * FROM meta")}
+    counts = {}
+    for t in ("weeks", "assets", "activity", "users", "report_files"):
+        try:
+            counts[t] = d.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
+        except sqlite3.Error:
+            counts[t] = None
+    st.update({
+        "passcodeSet": bool(PASSCODE),
+        "allowedDomain": ALLOWED_DOMAIN or None,
+        "dbCreatedAt": meta.get("created_at"),
+        "bootCount": int(meta.get("boot_count", 0) or 0),
+        "counts": counts,
+    })
+    return jsonify(st)
 
 
 @app.get("/api/activity")

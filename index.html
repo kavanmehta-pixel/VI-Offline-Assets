@@ -196,6 +196,13 @@ tr.asset{cursor:pointer}
 .rpt-dl{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;font-weight:700;padding:5px 12px;border-radius:3px;text-decoration:none;white-space:nowrap}
 .rpt-dl:hover{border-color:var(--slate);background:var(--slate);color:#fff}
 .rpt-cur{background:var(--green-bg);font-size:9px;font-weight:800;letter-spacing:.08em;color:var(--green);padding:2px 6px;border-radius:2px}
+.warnbar{background:var(--red);color:#fff;padding:11px 20px;font-size:13px;display:none;align-items:flex-start;gap:12px}
+.warnbar.on{display:flex}
+.warnbar b{font-weight:800}
+.warnbar .msg{flex:1;line-height:1.5}
+.warnbar code{background:rgba(255,255,255,.18);padding:1px 6px;border-radius:2px;font-family:var(--mono);font-size:12px}
+.warnbar .x{background:none;border:none;color:#fff;opacity:.7;font-size:18px;line-height:1;padding:0}
+.warnbar .x:hover{opacity:1}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--slate);color:#fff;padding:11px 20px;border-radius:4px;font-size:13px;font-weight:600;transition:transform .2s;z-index:60}
 .toast.on{transform:translateX(-50%) translateY(0)}
 input[type=file]{display:none}
@@ -225,6 +232,8 @@ input[type=file]{display:none}
     <div class="wrap triage-in" id="triageIn"></div>
   </div>
 </header>
+
+<div class="warnbar" id="warnbar"></div>
 
 <div class="wrap">
   <div class="nav" id="nav" style="display:none">
@@ -919,7 +928,21 @@ async function doLogout(){
   await fetch('/api/logout',{method:'POST'});
   currentUser=''; showGate();
 }
+async function checkHealth(){
+  try{
+    const h = await (await fetch('/api/health')).json();
+    const probs = [];
+    if(!h.persistent) probs.push(`<b>Data will be lost on the next deploy.</b> The database is on the container's temporary disk (<code>${esc(h.dbPath||'?')}</code>), not a Railway volume. Attach a Volume mounted at <code>/data</code> and set <code>DB_PATH=/data/vi_offline.db</code>.`);
+    if(!h.passcodeSet) probs.push(`<b>This board is unprotected.</b> Anyone with the URL can view and edit it. Set <code>APP_PASSCODE</code> in Railway to enable the sign-in gate.`);
+    const bar = $('#warnbar');
+    if(probs.length){
+      bar.innerHTML = `<span class="msg">${probs.join('<br>')}</span><button class="x" onclick="this.parentNode.classList.remove('on')">&times;</button>`;
+      bar.classList.add('on');
+    } else bar.classList.remove('on');
+  }catch(e){ /* health is advisory only */ }
+}
 async function boot(){
+  checkHealth();
   try{
     const a = await (await fetch('/api/auth')).json();
     if(a.required && !a.ok){ showGate(); return; }
