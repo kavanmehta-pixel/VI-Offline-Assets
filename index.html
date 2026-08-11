@@ -203,6 +203,8 @@ tr.asset{cursor:pointer}
 .warnbar code{background:rgba(255,255,255,.18);padding:1px 6px;border-radius:2px;font-family:var(--mono);font-size:12px}
 .warnbar .x{background:none;border:none;color:#fff;opacity:.7;font-size:18px;line-height:1;padding:0}
 .warnbar .x:hover{opacity:1}
+.progbar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--hazard);color:#171A1E;padding:11px 22px;border-radius:4px;font-size:13px;font-weight:700;transition:transform .2s;z-index:70;font-family:var(--mono)}
+.progbar.on{transform:translateX(-50%) translateY(0)}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--slate);color:#fff;padding:11px 20px;border-radius:4px;font-size:13px;font-weight:600;transition:transform .2s;z-index:60}
 .toast.on{transform:translateX(-50%) translateY(0)}
 input[type=file]{display:none}
@@ -224,7 +226,7 @@ input[type=file]{display:none}
       <button class="btn primary" id="btnUpload">Upload weekly report</button>
       <span id="userBadge" style="font-family:var(--mono);font-size:11px;color:#9FB0BE"></span>
       <button class="btn" id="btnLogout" style="display:none" onclick="doLogout()">Sign out</button>
-      <input type="file" id="fileIn" accept=".xlsx,.xls,.csv">
+      <input type="file" id="fileIn" accept=".xlsx,.xls,.csv" multiple>
       <input type="file" id="jsonIn" accept=".json">
     </div>
   </div>
@@ -458,8 +460,8 @@ function dropzone(){
   return `<div class="drop" id="dz">
     <h3>Drop the weekly offline report</h3>
     <p>Upload the 168-hour <b>Weekly Offline Assets</b> export straight from the hub — no conversion needed. The board reads the report date, strips the summary block, and keeps camera history week to week.</p>
-    <button class="btn2" onclick="document.getElementById('fileIn').click()">Choose file</button>
-    <div class="fmt">Weekly_Offline_Assets_DDMMYYYY.xlsx</div>
+    <button class="btn2" onclick="document.getElementById('fileIn').click()">Choose files</button>
+    <div class="fmt">Weekly_Offline_Assets_DDMMYYYY.xlsx &middot; select or drop as many as you like</div>
   </div>`;
 }
 
@@ -850,28 +852,56 @@ function setSort(k){ if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir = (k=
 function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('on'); clearTimeout(t._x); t._x=setTimeout(()=>t.classList.remove('on'),2200); }
 
 /* ================= io ================= */
-function handleFile(f){
-  const rd=new FileReader();
-  rd.onload=async e=>{
-    try{
-      const {reportDate, assets}=parseReport(new Uint8Array(e.target.result));
-      toast('Uploading '+assets.length+' cameras…');
-      // base64-encode raw file for server storage
-      const b64 = btoa(new Uint8Array(e.target.result).reduce((s,b)=>s+String.fromCharCode(b),''));
-      const rep=await ingest(reportDate, assets, b64, f.name);
-      branchFilter=null;
-      const historical = S.currentWeek && reportDate < S.currentWeek;
-      if(!historical) view='overview';
-      render();
-      toast(historical
-        ? `Historical report ${reportDate} merged — board stays on ${S.currentWeek}`
-        : `Loaded ${assets.length} cameras — report ${reportDate}` + (rep.length? ` · ${rep.length} repeat offender${rep.length>1?'s':''} back` : ''));
-    }catch(err){ alert(err.message); }
-  };
-  rd.readAsArrayBuffer(f);
+function readFile(f){
+  return new Promise((res,rej)=>{
+    const rd=new FileReader();
+    rd.onload=e=>res(new Uint8Array(e.target.result));
+    rd.onerror=()=>rej(new Error('Could not read '+f.name));
+    rd.readAsArrayBuffer(f);
+  });
 }
+function toB64(bytes){
+  let s=''; const CH=0x8000;
+  for(let i=0;i<bytes.length;i+=CH) s+=String.fromCharCode.apply(null, bytes.subarray(i,i+CH));
+  return btoa(s);
+}
+async function handleFiles(fileList){
+  const files=[...fileList]; if(!files.length) return;
+  // Parse everything first so one bad file can't abort a good batch
+  const parsed=[], failed=[];
+  for(const f of files){
+    try{
+      const bytes=await readFile(f);
+      const {reportDate, assets}=parseReport(bytes);
+      parsed.push({name:f.name, reportDate, assets, b64:toB64(bytes)});
+    }catch(err){ failed.push(`${f.name}: ${err.message}`); }
+  }
+  if(!parsed.length){ alert('No readable reports.\n\n'+failed.join('\n')); return; }
+  // Oldest first so history builds in order and the board ends on the newest week
+  parsed.sort((a,b)=>a.reportDate.localeCompare(b.reportDate));
+  let done=0, cameras=0;
+  const dupes=parsed.filter((p,i)=>i>0 && p.reportDate===parsed[i-1].reportDate).map(p=>p.reportDate);
+  for(const p of parsed){
+    showProgress(`Uploading ${++done} of ${parsed.length} — report ${p.reportDate}`);
+    try{ await ingest(p.reportDate, p.assets, p.b64, p.name); cameras+=p.assets.length; }
+    catch(err){ failed.push(`${p.name}: ${err.message}`); }
+  }
+  hideProgress();
+  branchFilter=null; view='overview'; render();
+  const weeks=[...new Set(parsed.map(p=>p.reportDate))].sort();
+  let msg=`${weeks.length} report${weeks.length>1?'s':''} loaded (${weeks[0]} → ${weeks[weeks.length-1]}) · ${cameras} camera rows`;
+  if(dupes.length) msg+=` · ${dupes.length} duplicate week${dupes.length>1?'s':''} merged`;
+  toast(msg);
+  if(failed.length) alert('Some files could not be loaded:\n\n'+failed.join('\n'));
+}
+function showProgress(t){
+  let el=document.getElementById('prog');
+  if(!el){ el=document.createElement('div'); el.id='prog'; el.className='progbar'; document.body.appendChild(el); }
+  el.textContent=t; el.classList.add('on');
+}
+function hideProgress(){ const el=document.getElementById('prog'); if(el) el.classList.remove('on'); }
 document.getElementById('btnUpload').onclick=()=>document.getElementById('fileIn').click();
-document.getElementById('fileIn').onchange=e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); e.target.value=''; };
+document.getElementById('fileIn').onchange=e=>{ handleFiles(e.target.files); e.target.value=''; };
 document.getElementById('btnExport').onclick=()=>{
   const blob=new Blob([JSON.stringify(S,null,1)],{type:'application/json'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
@@ -892,7 +922,7 @@ function wireDrop(){
   const dz=document.getElementById('dz'); if(!dz) return;
   ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('hot');}));
   ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('hot');}));
-  dz.addEventListener('drop',e=>{ if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+  dz.addEventListener('drop',e=>{ handleFiles(e.dataTransfer.files); });
 }
 let currentUser = '';
 function showGate(){

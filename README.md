@@ -36,6 +36,12 @@ user and action. `GET /api/users` returns the access roster; `GET /api/activity`
 - **Trends tab** — movement cards (new / boomerangs / carried / cleared), weekly totals chart with in/out flow, chronic-camera leaderboard with presence timelines, branch week-over-week matrix.
 - **Drawer** — per-camera weekly presence dots and days-offline trajectory.
 
+## Bulk upload / recovery
+The file picker and drop zone both accept **many files at once**. Reports are parsed first,
+sorted oldest → newest, then ingested in order, so history rebuilds correctly regardless of
+the order you select them. A file that fails to parse is skipped and reported at the end
+rather than aborting the batch. Re-uploading a week already present is idempotent.
+
 ## Weekly flow
 Upload the `Weekly_Offline_Assets_DDMMYYYY.xlsx` hub export as-is. Report date is read
 from the title row; the branch summary block is stripped. Cameras are keyed by asset
