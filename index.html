@@ -33,6 +33,10 @@ header{background:var(--slate);color:#fff}
 .btn.primary{background:var(--hazard);border-color:var(--hazard);color:#171A1E}
 .btn.primary:hover{background:#E5B41E}
 .weekof{font-family:var(--mono);font-size:12px;color:#9FB0BE}
+.whoami{font-family:var(--mono);font-size:11px;color:#9FB0BE;display:flex;align-items:center;gap:6px}
+.whoami b{color:#DDE5EA;font-weight:600}
+.whoami button{background:none;border:none;color:#7E909E;font-size:11px;text-decoration:underline;padding:0;font-family:var(--mono)}
+.whoami button:hover{color:#DDE5EA}
 .weekof b{color:#fff}
 
 /* ---------- triage strip ---------- */
@@ -193,6 +197,7 @@ input[type=file]{display:none}
     </div>
     <div class="hd-actions">
       <span class="weekof" id="weekof"></span>
+      <span class="whoami" id="whoami"></span>
       <button class="btn" id="btnExport">Export history</button>
       <button class="btn" id="btnImport">Import</button>
       <button class="btn primary" id="btnUpload">Upload weekly report</button>
@@ -357,6 +362,8 @@ function render(){
   $('#nav').style.display = has?'flex':'none';
   $('#triage').style.display = has?'block':'none';
   $('#weekof').innerHTML = has? `Report: <b>${S.currentWeek}</b>` : '';
+  $('#whoami').innerHTML = currentUser
+    ? `<b>${esc(currentUser)}</b> <button onclick="doLogout()">Sign out</button>` : '';
   if(currentUser){ $('#userBadge').textContent=currentUser; $('#btnLogout').style.display=''; }
   else { $('#userBadge').textContent=''; $('#btnLogout').style.display='none'; }
   if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
@@ -828,6 +835,7 @@ function wireDrop(){
 let currentUser = '';
 function showGate(){
   $('#nav').style.display='none'; $('#triage').style.display='none';
+  $('#whoami').innerHTML=''; $('#weekof').innerHTML='';
   $('#main').innerHTML = `<div class="drop" style="padding:60px 30px">
     <h3>Sign in to VI Offline Assets</h3>
     <p>Enter your email and the shared access password to continue.</p>
@@ -837,6 +845,7 @@ function showGate(){
       <button class="btn2" onclick="login()" style="width:100%;padding:11px">Sign in</button>
     </div><div id="pcerr" style="color:var(--red);font-size:12px;margin-top:10px"></div></div>`;
   const em=document.getElementById('em');
+  em.addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('pc').focus(); });
   document.getElementById('pc').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
   em.focus();
 }
@@ -846,7 +855,11 @@ async function login(){
   if(!email||!email.includes('@')){ document.getElementById('pcerr').textContent='Enter a valid email.'; return; }
   const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,code})});
   if(r.ok){ const d=await r.json(); currentUser=d.email||email; boot(); }
-  else { document.getElementById('pcerr').textContent='Wrong password.'; }
+  else {
+    let msg='Sign in failed.';
+    try{ const d=await r.json(); if(d.error) msg=d.error; }catch(_){}
+    document.getElementById('pcerr').textContent=msg;
+  }
 }
 async function doLogout(){
   await fetch('/api/logout',{method:'POST'});

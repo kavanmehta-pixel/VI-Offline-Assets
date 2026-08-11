@@ -5,9 +5,15 @@ Flask + SQLite; all fixes, notes and history persist server-side so every branch
 
 ## Deploy (Railway)
 1. New Project -> Deploy from GitHub repo -> `kavanmehta-pixel/vi-offline-assets`
-2. Env vars: `DB_PATH=/data/vi_offline.db`, optionally `APP_PASSCODE=<code>` to gate access
+2. Env vars: `DB_PATH=/data/vi_offline.db`, `APP_PASSCODE=<shared password>` to gate access (required — leaving it unset makes the board open)
 3. Add a Volume mounted at `/data` (persists the DB between deploys — do not skip)
 4. Deploy
+
+## Access control
+Sign-in requires an email address plus the shared password from the `APP_PASSCODE` env var.
+The password is never stored in this repo. Emails are recorded in the `users` table and
+attributed to every fix, note, and park action, so the history shows who did what.
+`GET /api/users` returns the access roster.
 
 ## Analytics
 - **Per-week snapshots** — every upload stores that week's full camera state; the board always renders the newest report date, so historical uploads merge into history without touching the front view.

@@ -7,7 +7,7 @@ from functools import wraps
 from flask import Flask, g, jsonify, request, send_from_directory, make_response
 
 DB_PATH = os.environ.get("DB_PATH", "vi_offline.db")
-PASSCODE = os.environ.get("APP_PASSCODE", "Visioni2026!")  # optional shared access code
+PASSCODE = os.environ.get("APP_PASSCODE", "")  # shared access code — set in Railway env vars
 
 app = Flask(__name__, static_folder=None)
 
@@ -49,6 +49,12 @@ def init_db():
             week TEXT NOT NULL,
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
+        );
+        CREATE TABLE IF NOT EXISTS users(
+            email TEXT PRIMARY KEY,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            logins INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS parked(
             asset TEXT PRIMARY KEY,
@@ -128,10 +134,20 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def valid_email(e):
+    e = (e or "").strip()
+    if len(e) < 6 or " " in e or e.count("@") != 1:
+        return False
+    local, _, domain = e.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+
+
 def authed():
     if not PASSCODE:
         return True
-    return request.cookies.get("vi_pass") == PASSCODE
+    if request.cookies.get("vi_pass") != PASSCODE:
+        return False
+    return valid_email(request.cookies.get("vi_user", ""))
 
 
 def require_auth(f):
@@ -160,14 +176,21 @@ def auth_login():
     p = request.get_json(silent=True) or {}
     code = p.get("code", "")
     email = (p.get("email") or "").strip().lower()
-    if not email or "@" not in email:
-        return jsonify({"ok": False, "error": "Valid email required"}), 400
-    if not PASSCODE or code == PASSCODE:
-        resp = make_response(jsonify({"ok": True, "email": email}))
-        resp.set_cookie("vi_pass", code, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
-        resp.set_cookie("vi_user", email, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
-        return resp
-    return jsonify({"ok": False}), 401
+    if not valid_email(email):
+        return jsonify({"ok": False, "error": "Enter a valid email address."}), 400
+    if PASSCODE and code != PASSCODE:
+        return jsonify({"ok": False, "error": "Incorrect password."}), 401
+    d = db()
+    if d.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+        d.execute("UPDATE users SET last_seen=?, logins=logins+1 WHERE email=?", (now(), email))
+    else:
+        d.execute("INSERT INTO users(email, first_seen, last_seen, logins) VALUES(?,?,?,1)",
+                  (email, now(), now()))
+    d.commit()
+    resp = make_response(jsonify({"ok": True, "email": email}))
+    resp.set_cookie("vi_pass", code, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
+    resp.set_cookie("vi_user", email, max_age=180 * 24 * 3600, httponly=False, samesite="Lax")
+    return resp
 
 
 @app.get("/api/state")
@@ -343,6 +366,15 @@ def logout():
     resp.delete_cookie("vi_pass")
     resp.delete_cookie("vi_user")
     return resp
+
+
+@app.get("/api/users")
+@require_auth
+def list_users():
+    d = db()
+    rows = d.execute("SELECT * FROM users ORDER BY last_seen DESC").fetchall()
+    return jsonify([{"email": r["email"], "firstSeen": r["first_seen"],
+                     "lastSeen": r["last_seen"], "logins": r["logins"]} for r in rows])
 
 
 @app.get("/api/reports")
