@@ -69,6 +69,15 @@ appears on each triage strip. The 168-hour export has no fleet count, so it matc
 48-hour figure from the same week (within 6 days); if no 48-hour report has been uploaded,
 the tracker explains what's missing rather than showing a wrong number.
 
+## Cleared before a week
+A cross-stream metric shown in Trends on both boards: of the cameras on a week's 48-hour
+report, what share were absent from the same run's 168-hour report — i.e. never ended the
+week as a week-long outage. Computed from camera IDs, not counts. The 168-hour list is a
+strict subset of the 48-hour list (verified), so the difference is well defined. Broken out
+into cameras that never reached 7 days versus those already past a week that were repaired
+during it. Higher is better. Requires both reports from the same run; without a pair the
+card says so rather than guessing.
+
 ## Bulk upload / recovery
 The file picker and drop zone both accept **many files at once**. Reports are parsed first,
 sorted oldest → newest, then ingested in order, so history rebuilds correctly regardless of
