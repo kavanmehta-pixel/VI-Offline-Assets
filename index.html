@@ -33,6 +33,10 @@ header{background:var(--slate);color:#fff}
 .btn.primary{background:var(--hazard);border-color:var(--hazard);color:#171A1E}
 .btn.primary:hover{background:#E5B41E}
 .weekof{font-family:var(--mono);font-size:12px;color:#9FB0BE}
+.modesw{display:inline-flex;border:1px solid #46545F;border-radius:3px;overflow:hidden}
+.modesw button{background:transparent;border:none;color:#9FB0BE;font-size:11.5px;font-weight:700;letter-spacing:.04em;padding:7px 13px;font-family:var(--sans)}
+.modesw button:hover{background:#2E3A45;color:#DDE5EA}
+.modesw button.on{background:var(--hazard);color:#171A1E}
 .weekof b{color:#fff}
 
 /* ---------- triage strip ---------- */
@@ -231,9 +235,13 @@ input[type=file]{display:none}
   <div class="wrap hd">
     <div class="brand">
       <h1>VI Offline Assets</h1>
-      <span class="sub">168-hr triage board</span>
+      <span class="sub" id="subtitle">168-hr triage board</span>
     </div>
     <div class="hd-actions">
+      <span class="modesw" id="modesw">
+        <button data-m="w168" class="on" onclick="setMode('w168')">168&#8209;hour</button>
+        <button data-m="w48" onclick="setMode('w48')">48&#8209;hour</button>
+      </span>
       <span class="weekof" id="weekof"></span>
       <button class="btn" id="btnExport">Export history</button>
       <button class="btn" id="btnImport">Import</button>
@@ -252,17 +260,7 @@ input[type=file]{display:none}
 <div class="warnbar" id="warnbar"></div>
 
 <div class="wrap">
-  <div class="nav" id="nav" style="display:none">
-    <button data-v="overview" class="on">Overview</button>
-    <button data-v="pickles">Pickles <span class="count" id="cPk">0</span></button>
-    <button data-v="all">All offline <span class="count" id="cAll">0</span></button>
-    <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
-    <button data-v="trends">Trends</button>
-    <button data-v="known">Known issues <span class="count" id="cKn">0</span></button>
-    <button data-v="w48">48-hour <span class="count" id="c48">0</span></button>
-    <button data-v="reports">Reports</button>
-    <button data-v="activity">Activity log</button>
-  </div>
+  <div class="nav" id="nav" style="display:none"></div>
 </div>
 
 <main class="wrap" id="main"></main>
@@ -421,12 +419,19 @@ function weekAssets(){
   return (S.weeks[S.currentWeek].ids||[]).map(id=>S.assets[id]).filter(Boolean);
 }
 function isFixed(rec){ return rec.fixes.some(f=>f.week===S.currentWeek); }
-function isParked(id){ return !!(S.parked&&S.parked[id]); }
-function assetAnyStream(id){
-  return (S.assets&&S.assets[id]) || ((S.w48||{}).assets||{})[id] || null;
+let mode='w168';
+function parkedMap(){ return ((S.parked||{})[mode])||{}; }
+function isParked(id){ return !!parkedMap()[id]; }
+function setMode(m){
+  if(mode===m) return;
+  mode=m; branchFilter=null; search=''; w48Search='';
+  view = m==='w48' ? 'w48' : 'overview';
+  render(); window.scrollTo(0,0);
 }
+function streamAssets(){ return mode==='w48' ? (((S.w48||{}).assets)||{}) : (S.assets||{}); }
 function allParked(){
-  return Object.keys(S.parked||{}).map(assetAnyStream).filter(Boolean);
+  const A=streamAssets();
+  return Object.keys(parkedMap()).map(id=>A[id]).filter(Boolean);
 }
 const PARK_REASONS = {
   'connection':'Connection issues',
@@ -488,15 +493,43 @@ function weeklySeries(){
 const $=s=>document.querySelector(s);
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+function navHtml(items){
+  return items.map(([v,label,count])=>
+    `<button data-v="${v}" class="${view===v?'on':''}" onclick="go('${v}')">${label}${
+      count!=null?` <span class="count">${count}</span>`:''}</button>`).join('');
+}
+
 function render(){
-  const has = !!S.currentWeek;
-  $('#nav').style.display = has?'flex':'none';
-  $('#triage').style.display = has?'block':'none';
-  $('#weekof').innerHTML = has? `Report: <b>${S.currentWeek}</b>` : '';
+  const has168 = !!S.currentWeek;
+  const W48 = S.w48 || {currentWeek:null, weeks:{}, assets:{}};
+  const has48 = !!W48.currentWeek;
+  const has = mode==='w48' ? has48 : has168;
+
+  // mode switch only shown once there is something to switch between
+  const bothPossible = has168 || has48;
+  $('#modesw').style.display = bothPossible ? 'inline-flex' : 'none';
+  document.querySelectorAll('#modesw button').forEach(b=>b.classList.toggle('on', b.dataset.m===mode));
+
   if(currentUser){ $('#userBadge').textContent=currentUser; $('#btnLogout').style.display=''; }
   else { $('#userBadge').textContent=''; $('#btnLogout').style.display='none'; }
-  if(!has){ $('#main').innerHTML = dropzone(); wireDrop(); return; }
 
+  if(!has){
+    $('#nav').style.display='none'; $('#triage').style.display='none';
+    $('#weekof').innerHTML='';
+    $('#main').innerHTML = mode==='w48'
+      ? `<div class="drop" id="dz"><h3>No 48-hour report loaded</h3><p>Upload the <b>OffLine_Assets_Last_7_Days_over_48Hrs</b> export — the format is detected automatically and kept on this board, separate from the 168-hour one.</p><button class="btn2" onclick="document.getElementById('fileIn').click()">Choose files</button><div class="fmt">select or drop as many as you like</div></div>`
+      : dropzone();
+    wireDrop(); return;
+  }
+  $('#nav').style.display='flex'; $('#triage').style.display='block';
+
+  $('#subtitle').textContent = mode==='w48' ? '48-hr triage board' : '168-hr triage board';
+  if(mode==='w48') return render48(W48);
+  return render168();
+}
+
+function render168(){
+  $('#weekof').innerHTML = `Report: <b>${S.currentWeek}</b>`;
   const A = weekAssets();
   const active = A.filter(r=>!isParked(r.snap.id));  // exclude parked from main views
   const parkedList = allParked();
@@ -505,16 +538,12 @@ function render(){
   const pk = active.filter(r=>r.snap.pickles);
   const pkOpen = pk.filter(r=>!isFixed(r));
 
-  // nav counts
-  $('#cPk').textContent = pkOpen.length;
-  $('#cAll').textContent = open.length;
-  $('#cFix').textContent = fixed.length;
-  $('#cKn').textContent = parkedList.length;
-  const W48=S.w48||{weeks:{},assets:{}};
-  $('#c48').textContent = W48.currentWeek ? ((W48.weeks[W48.currentWeek]||{}).ids||[]).length : 0;
-  document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===view));
+  $('#nav').innerHTML = navHtml([
+    ['overview','Overview',null], ['pickles','Pickles',pkOpen.length],
+    ['all','All offline',open.length], ['repaired','Repaired',fixed.length],
+    ['trends','Trends',null], ['known','Known issues',parkedList.length],
+    ['reports','Reports',null], ['activity','Activity log',null]]);
 
-  // triage strip
   const pkBr = {};
   pkOpen.forEach(r=>pkBr[r.snap.branch]=(pkBr[r.snap.branch]||0)+1);
   const chips = Object.entries(pkBr).sort((a,b)=>b[1]-a[1])
@@ -554,8 +583,9 @@ function render(){
   else if(view==='known') renderKnown(parkedList);
   else if(view==='reports') renderReports();
   else if(view==='activity') renderActivity();
-  else if(view==='w48') renderW48();
+  else { view='overview'; renderOverview(open, A); }
 }
+
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
 function wowDelta(){
   const m = movement(); if(!m||!m.P) return '';
@@ -774,20 +804,20 @@ function trendChart(series){
 function renderKnown(parkedList){
   const byReason = {};
   parkedList.forEach(r=>{
-    const p = S.parked[r.snap.id];
+    const p = parkedMap()[r.snap.id];
     const k = p.reason||'other';
     (byReason[k]=byReason[k]||[]).push(r);
   });
   const groups = Object.entries(PARK_REASONS).filter(([k])=>byReason[k]&&byReason[k].length);
   $('#main').innerHTML = `<div class="card">
     <div class="tbl-hd"><h2>Known issues — parked cameras</h2>
-      <span class="tally">${parkedList.length} camera${parkedList.length!==1?'s':''} parked &middot; excluded from triage counts${(()=>{const a=Object.values(S.parked||{}).filter(p=>p.auto).length; return a?` &middot; ${a} auto from 48hr flags`:'';})()}</span></div>
+      <span class="tally">${parkedList.length} camera${parkedList.length!==1?'s':''} parked &middot; excluded from triage counts${(()=>{const a=Object.values(parkedMap()).filter(p=>p.auto).length; return a?` &middot; ${a} auto from hub flags`:'';})()}</span></div>
     ${groups.map(([k,label])=>{
       const items = byReason[k];
       return `<div class="park-group">
         <div class="park-reason">${esc(label)} <span class="ct">${items.length}</span></div>
         <table><tbody>
-        ${items.map(r=>{const a=r.snap, p=S.parked[a.id], n=appearCount(r);
+        ${items.map(r=>{const a=r.snap, p=parkedMap()[a.id], n=appearCount(r);
           return `<tr class="asset" onclick="openDrawer('${a.id}')">
             <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${n>1?`<span class="rep-flag">&times;${n}</span>`:''}</td>
             <td><span class="cust">${esc(a.customer)}</span></td>
@@ -797,7 +827,7 @@ function renderKnown(parkedList){
             <td style="text-align:right"><button class="unpark-btn" onclick="event.stopPropagation();doUnpark('${a.id}')">Return to triage</button></td>
           </tr>`;}).join('')}
         </tbody></table></div>`;}).join('')}
-    ${!parkedList.length?'<div style="padding:30px;text-align:center;color:var(--muted)">No cameras parked. Open any camera from the offline list and use <b>Park — known issue</b> to move it here.</div>':''}
+    ${!parkedList.length?`<div style="padding:30px;text-align:center;color:var(--muted)">No cameras parked on the ${mode==='w48'?'48-hour':'168-hour'} board. Parking is tracked separately for each board.</div>`:''}
   </div>`;
 }
 function doUnpark(id){
@@ -852,56 +882,118 @@ async function renderActivity(){
 }
 
 let w48Filter='all', w48Search='';
-function renderW48(){
-  const W=S.w48||{currentWeek:null,weeks:{},assets:{}};
-  if(!W.currentWeek){
-    $('#main').innerHTML='<div class="card" style="padding:34px;text-align:center;color:var(--muted)">No 48-hour report loaded yet. Upload the <b>OffLine_Assets_Last_7_Days_over_48Hrs</b> export — it\'s detected automatically and kept separate from the 168-hour board.</div>';
-    return;
-  }
-  const wks=Object.keys(W.weeks).sort();
+
+function render48(W){
+  $('#weekof').innerHTML = `Report: <b>${W.currentWeek}</b>`;
   const ids=(W.weeks[W.currentWeek]||{}).ids||[];
   const all=ids.map(id=>W.assets[id]).filter(Boolean);
-  const early=all.filter(r=>!r.snap.sentinel && r.snap.daysOffline<7);
-  const dq=all.filter(r=>r.snap.sentinel);
-  const flagged=all.filter(r=>{const s=r.snap; return (s.suitable||'').toLowerCase()==='no'||(s.reachable||'').toLowerCase()==='no';});
-  const autoParked=Object.entries(S.parked||{}).filter(([,p])=>p.auto).length;
-  const realMax=Math.max(0,...all.filter(r=>!r.snap.sentinel).map(r=>r.snap.daysOffline));
+  const active=all.filter(r=>!isParked(r.snap.id));
+  const parkedList=allParked();
+  const early=active.filter(r=>!r.snap.sentinel && r.snap.daysOffline<7);
+  const dq=active.filter(r=>r.snap.sentinel);
+  const realMax=Math.max(0,...active.filter(r=>!r.snap.sentinel).map(r=>r.snap.daysOffline));
+  const pk=active.filter(r=>r.snap.pickles);
+  const wks=Object.keys(W.weeks).sort();
   const prev=wks.length>1?wks[wks.length-2]:null;
   const prevIds=prev?new Set((W.weeks[prev]||{}).ids||[]):null;
-  const newIn=prevIds?all.filter(r=>!prevIds.has(r.snap.id)).length:null;
+  const newIn=prevIds?active.filter(r=>!prevIds.has(r.snap.id)).length:null;
+  const out=prevIds?[...prevIds].filter(id=>!ids.includes(id)).length:null;
 
-  let list=all;
-  if(w48Filter==='early') list=early;
-  else if(w48Filter==='dq') list=dq;
-  else if(w48Filter==='flagged') list=flagged;
+  $('#nav').innerHTML = navHtml([
+    ['w48','Overview',null], ['w48all','All over 48h',active.length],
+    ['w48early','Early warning',early.length], ['w48dq','No heartbeat',dq.length],
+    ['trends','Trends',null], ['known','Known issues',parkedList.length],
+    ['reports','Reports',null], ['activity','Activity log',null]]);
+
+  const pkBr={}; pk.forEach(r=>pkBr[r.snap.branch]=(pkBr[r.snap.branch]||0)+1);
+  const chips=Object.entries(pkBr).sort((a,b)=>b[1]-a[1])
+    .map(([b,n])=>`<span class="chip">${esc(b)} <b>${n}</b></span>`).join('');
+  $('#triageIn').innerHTML = `
+    <div class="t-block" onclick="go('w48early')">
+      <div class="t-label"><span class="tag">EARLY</span> Under 7 days</div>
+      <div class="t-num ${early.length?'':'ok'}">${early.length}</div>
+      <div class="t-sub">catch before they hit the 168h board</div>
+    </div>
+    <div class="t-block" onclick="go('w48all')">
+      <div class="t-label">Total offline &gt;48h</div>
+      <div class="t-num">${active.length}</div>
+      <div class="t-sub">${all.length} reported${parkedList.length?` &middot; ${parkedList.length} parked`:''}${
+        newIn!==null?` &middot; <span style="color:${newIn>out?'#E58676':'#6FBF8E'}">${newIn>out?'+':''}${newIn-out} vs last wk</span> <span style="color:#7E909E">(+${newIn} in / &minus;${out} out)</span>`:''}</div>
+    </div>
+    <div class="t-block" onclick="go('w48all','__longest')">
+      <div class="t-label">Longest offline</div>
+      <div class="t-num">${realMax}<span style="font-size:18px">d</span></div>
+      <div class="t-sub">excludes cameras with no heartbeat</div>
+    </div>
+    <div class="t-block" onclick="go('w48')">
+      <div class="t-label"><span class="tag">PRIORITY</span> Pickles down</div>
+      <div class="t-num ${pk.length?'':'ok'}">${pk.length}</div>
+      <div class="t-chips">${chips || '<span class="chip">all clear</span>'}</div>
+    </div>
+    ${dq.length?`<div class="t-block" onclick="go('w48dq')">
+      <div class="t-label">No heartbeat</div>
+      <div class="t-num" style="color:#C77F0A">${dq.length}</div>
+      <div class="t-sub">durations unreliable</div>
+    </div>`:''}`;
+
+  if(view==='w48') return renderW48Overview(active, all, early, dq, W);
+  if(view==='w48all') return renderW48List(branchFilter? active.filter(r=>r.snap.branch===branchFilter):active, branchFilter||'All cameras over 48 hours', W);
+  if(view==='w48early') return renderW48List(early, 'Early warning — under 7 days offline', W);
+  if(view==='w48dq') return renderW48List(dq, 'No heartbeat recorded — durations unreliable', W);
+  if(view==='trends') return renderTrends48(W);
+  if(view==='known') return renderKnown(parkedList);
+  if(view==='reports') return renderReports();
+  if(view==='activity') return renderActivity();
+  view='w48'; return renderW48Overview(active, all, early, dq, W);
+}
+
+function renderW48Overview(active, all, early, dq, W){
+  const byBr={};
+  active.forEach(r=>{ const b=r.snap.branch||'?'; (byBr[b]=byBr[b]||{n:0,pk:0,early:0}); byBr[b].n++;
+    if(r.snap.pickles) byBr[b].pk++;
+    if(!r.snap.sentinel && r.snap.daysOffline<7) byBr[b].early++; });
+  const rows=Object.entries(byBr).sort((a,b)=>b[1].n-a[1].n);
+  const maxN=Math.max(1,...rows.map(r=>r[1].n));
+  const worst=active.filter(r=>!r.snap.sentinel).sort((a,b)=>b.snap.daysOffline-a.snap.daysOffline).slice(0,10);
+  const wks=Object.keys(W.weeks).sort();
+  $('#main').innerHTML=`<div class="grid">
+    <div class="card">
+      <h2>Over 48 hours by branch</h2>
+      ${rows.map(([b,v])=>`
+        <div class="branch-row" onclick="goBranch48('${esc(b).replace(/'/g,"\\'")}')">
+          <span class="nm">${esc(b)}${v.pk?'<span class="pk-dot" title="Pickles cameras here"></span>':''}${v.early?`<span class="tag-early" title="${v.early} under 7 days">${v.early} new</span>`:''}</span>
+          <span class="meta"><span class="bar" style="width:${Math.round(v.n/maxN*90)}px"></span><span class="n">${v.n}</span></span>
+        </div>`).join('')}
+    </div>
+    <div class="card">
+      <h2>Longest offline — excludes cameras with no heartbeat</h2>
+      <table><thead><tr><th>Asset</th><th>Customer</th><th>Branch</th><th>Offline</th></tr></thead>
+      <tbody>${worst.map(r=>{const a=r.snap;
+        return `<tr class="asset" onclick="openDrawer48('${esc(a.id)}')">
+          <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}</td>
+          <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
+          <td>${esc(a.branch)}</td>
+          <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td></tr>`;}).join('')}
+      </tbody></table>
+    </div>
+  </div>
+  <div class="foot-note">${wks.length} × 48hr report${wks.length>1?'s':''} loaded (${wks[0]} → ${W.currentWeek}) &middot; ${all.length} cameras reported, ${early.length} under 7 days, ${dq.length} with no heartbeat &middot; this board is independent of the 168-hour one</div>`;
+}
+
+function renderW48List(recs, title, W){
+  let list=recs;
   if(w48Search){const q=w48Search.toLowerCase();
     list=list.filter(r=>{const a=r.snap;return (a.id+' '+a.customer+' '+a.branch+' '+(a.suburb||'')+' '+(a.state||'')).toLowerCase().includes(q);});}
   list=list.slice().sort((a,b)=>{
-    if(a.snap.sentinel!==b.snap.sentinel) return a.snap.sentinel?1:-1;  // real data first
+    if(a.snap.sentinel!==b.snap.sentinel) return a.snap.sentinel?1:-1;
     return b.snap.daysOffline-a.snap.daysOffline;
   });
-
-  const sel=f=>w48Filter===f?'style="outline:2px solid var(--slate)"':'';
-  $('#main').innerHTML=`
-  <div class="w48-cards">
-    <div class="w48-card early" ${sel('early')} onclick="w48Filter='early';render()" style="cursor:pointer">
-      <div class="n">${early.length}</div><div class="l">Early warning</div>
-      <div class="s">under 7 days — not yet on the 168hr board</div></div>
-    <div class="w48-card tot" ${sel('all')} onclick="w48Filter='all';render()" style="cursor:pointer">
-      <div class="n">${all.length}</div><div class="l">Total over 48hrs</div>
-      <div class="s">longest ${realMax}d${newIn!==null?` · ${newIn} new vs ${prev}`:''}</div></div>
-    <div class="w48-card dq" ${sel('dq')} onclick="w48Filter='dq';render()" style="cursor:pointer">
-      <div class="n">${dq.length}</div><div class="l">No heartbeat</div>
-      <div class="s">hub has no reading — durations unreliable</div></div>
-    <div class="w48-card park" ${sel('flagged')} onclick="w48Filter='flagged';render()" style="cursor:pointer">
-      <div class="n">${flagged.length}</div><div class="l">Hub-flagged</div>
-      <div class="s">${autoParked} auto-parked to Known issues</div></div>
-  </div>
-  <div class="card">
+  $('#main').innerHTML=`<div class="card">
     <div class="tbl-hd">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <h2>48-hour report — ${esc(W.currentWeek)}</h2>
-        <span class="tally">${list.length} shown${w48Filter!=='all'?` · <button class="back" onclick="w48Filter='all';render()">clear filter</button>`:''}</span>
+        ${branchFilter?`<button class="back" onclick="clearBranch()">&larr; All branches</button>`:''}
+        <h2>${esc(title)}</h2>
+        <span class="tally">${list.length} shown</span>
       </div>
       <input placeholder="Filter asset / customer / branch / suburb" value="${esc(w48Search)}" oninput="w48Search=this.value;render()">
     </div>
@@ -911,7 +1003,7 @@ function renderW48(){
     ${list.map(r=>{const a=r.snap, n=r.appearances.length;
       const bad=(a.suitable||'').toLowerCase()==='no'||(a.reachable||'').toLowerCase()==='no';
       return `<tr class="asset" onclick="openDrawer48('${esc(a.id)}')">
-        <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${!a.sentinel&&a.daysOffline<7?'<span class="tag-early">NEW</span>':''}${a.sentinel?'<span class="tag-dq" title="Hub has no heartbeat for this camera (1900-01-01 placeholder) — the offline duration is not reliable">NO HB</span>':''}${bad?'<span class="tag-flag">FLAGGED</span>':''}</td>
+        <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${!a.sentinel&&a.daysOffline<7?'<span class="tag-early">NEW</span>':''}${a.sentinel?'<span class="tag-dq" title="Hub has no heartbeat for this camera — the offline duration is not reliable">NO HB</span>':''}${bad?'<span class="tag-flag">FLAGGED</span>':''}</td>
         <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
         <td>${esc(a.branch)}</td>
         <td><span class="loc" title="${esc([a.address,a.suburb,a.state,a.postcode].filter(Boolean).join(', '))}">${esc([a.suburb,a.state].filter(Boolean).join(', '))}</span></td>
@@ -922,13 +1014,57 @@ function renderW48(){
       </tr>`;}).join('')}
     ${!list.length?'<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px">Nothing matches.</td></tr>':''}
     </tbody></table>
-  </div>
-  <div class="foot-note">${wks.length} × 48hr report${wks.length>1?'s':''} loaded (${wks[0]} → ${W.currentWeek}) · durations for "no heartbeat" cameras are excluded from the longest-offline figure${autoParked?` · <button class="back" onclick="releaseAuto()">release ${autoParked} auto-parked</button>`:''}</div>`;
+  </div>`;
 }
+
+function goBranch48(b){ view='w48all'; branchFilter=b; w48Search=''; render(); window.scrollTo(0,0); }
+
+function renderTrends48(W){
+  const wks=Object.keys(W.weeks).sort();
+  if(wks.length<2){
+    $('#main').innerHTML='<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Trends need at least two 48-hour reports. Upload more and this fills in: week-over-week movement, chronic cameras, branch trajectories.</div>';
+    return;
+  }
+  const series=wks.map((w,i)=>{
+    const ids=(W.weeks[w].ids)||[];
+    const prev=i>0?new Set((W.weeks[wks[i-1]].ids)||[]):null;
+    const cur=new Set(ids); let inn=0,out=0;
+    if(prev){ cur.forEach(id=>{if(!prev.has(id))inn++;}); prev.forEach(id=>{if(!cur.has(id))out++;}); }
+    const pk=ids.filter(id=>W.assets[id]&&W.assets[id].snap.pickles).length;
+    return {week:w,total:ids.length,pickles:pk,inn,out};
+  });
+  const chron=Object.entries(W.assets).map(([id,r])=>({id,r,n:r.appearances.length}))
+    .filter(x=>x.n>1).sort((a,b)=>b.n-a.n).slice(0,20);
+  const last=wks.slice(-8), brs={};
+  last.forEach(w=>{ ((W.weeks[w].ids)||[]).forEach(id=>{
+    const b=(W.assets[id]||{snap:{}}).snap.branch||'?'; (brs[b]=brs[b]||{})[w]=(brs[b][w]||0)+1; }); });
+  const brRows=Object.entries(brs).map(([b,m])=>({b,vals:last.map(w=>m[w]||0)}))
+    .sort((a,b)=>b.vals[b.vals.length-1]-a.vals[a.vals.length-1]);
+  $('#main').innerHTML=`
+  <div class="card"><h2>Weekly totals — ${wks.length} × 48hr reports (${wks[0]} → ${wks[wks.length-1]})</h2>
+    <div style="padding:14px 16px">${trendChart(series)}</div></div>
+  <div class="tgrid">
+    <div class="card"><h2>Chronic cameras — most weeks on the 48hr report</h2>
+      <table><thead><tr><th>Asset</th><th>Branch</th><th>Wks</th><th>Timeline</th></tr></thead><tbody>
+      ${chron.map(x=>{const a=x.r.snap, ap=new Set(x.r.appearances);
+        return `<tr class="asset" onclick="openDrawer48('${esc(x.id)}')">
+          <td><span class="aid">${esc(x.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}</td>
+          <td>${esc(a.branch)}</td><td style="font-family:var(--mono);font-weight:600">${x.n}</td>
+          <td><span class="dotrow">${wks.slice(-16).map(w=>`<span class="wdot ${ap.has(w)?'on':''}" title="${w}"></span>`).join('')}</span></td></tr>`;}).join('')}
+      </tbody></table></div>
+    <div class="card"><h2>Branches — last ${last.length} reports</h2>
+      <table><thead><tr><th>Branch</th>${last.map(w=>`<th style="text-align:center">${w.slice(5)}</th>`).join('')}<th></th></tr></thead><tbody>
+      ${brRows.map(r=>{const a=r.vals[r.vals.length-1], b=r.vals.length>1?r.vals[r.vals.length-2]:a;
+        const ar=a>b?'<span class="trend-arrow" style="color:var(--red)">&#9650;</span>':a<b?'<span class="trend-arrow" style="color:var(--green)">&#9660;</span>':'<span style="color:var(--muted)">&ndash;</span>';
+        return `<tr class="asset" onclick="goBranch48('${esc(r.b).replace(/'/g,"\\'")}')"><td style="font-weight:600">${esc(r.b)}</td>${r.vals.map(v=>`<td style="text-align:center;font-family:var(--mono)">${v||0}</td>`).join('')}<td>${ar}</td></tr>`;}).join('')}
+      </tbody></table></div>
+  </div>`;
+}
+
 function openDrawer48(id){
   const r=(S.w48&&S.w48.assets||{})[id]; if(!r) return;
   const a=r.snap, wks=Object.keys((S.w48||{}).weeks||{}).sort();
-  const p=(S.parked||{})[id];
+  const p=parkedMap()[id];
   $('#drawer').innerHTML=`
     <div class="dw-hd" style="position:relative">
       <button class="x" onclick="closeDrawer()">&times;</button>
@@ -1023,7 +1159,7 @@ function openDrawer(id){
       </div>
       ${isParked(a.id)?`
         <div style="display:flex;align-items:center;gap:8px;width:100%">
-          <span style="font-size:11px;color:var(--amber);font-weight:700;flex:1">&#9888; Parked: ${esc(PARK_REASONS[S.parked[a.id].reason]||S.parked[a.id].reason)}</span>
+          <span style="font-size:11px;color:var(--amber);font-weight:700;flex:1">&#9888; Parked: ${esc(PARK_REASONS[parkedMap()[a.id].reason]||parkedMap()[a.id].reason)}</span>
           <button class="unpark-btn" onclick="doUnpark('${a.id}');openDrawer('${a.id}')">Return to triage</button>
         </div>
       `:`
@@ -1064,7 +1200,9 @@ function toggleFix(id){
   if(drawerId===id) openDrawer(id);
   api('fix',{id, week:S.currentWeek, on}).then(()=>refresh().then(()=>{render(); if(drawerId===id) openDrawer(id);})).catch(()=>{ toast('Save failed — refresh and retry'); });
 }
-function go(v, mode){ view=v; branchFilter=null; search=''; if(mode==='__longest'){sortKey='daysOffline';sortDir=-1;} render(); window.scrollTo(0,0); }
+function go(v, opt){ view=v; branchFilter=null; search=''; w48Search='';
+  if(opt==='__longest'){sortKey='daysOffline';sortDir=-1;}
+  render(); window.scrollTo(0,0); }
 function goBranch(b){ view='all'; branchFilter=b; search=''; render(); window.scrollTo(0,0); }
 function clearBranch(){ branchFilter=null; render(); }
 function setSort(k){ if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir = (k==='daysOffline'||k==='hoursOffline')?-1:1;} render(); }
@@ -1113,7 +1251,8 @@ async function handleFiles(fileList){
   }
   hideProgress();
   branchFilter=null;
-  if(w168.length) view='overview'; else if(w48.length) view='w48';
+  if(w48.length && !w168.length){ mode='w48'; view='w48'; }
+  else if(w168.length){ mode='w168'; view='overview'; }
   render();
   const bits=[];
   if(w168.length) bits.push(`${w168.length} weekly 168hr report${w168.length>1?'s':''} · ${cam168} camera rows`);
@@ -1145,7 +1284,6 @@ document.getElementById('jsonIn').onchange=e=>{
   rd.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(!d.assets) throw 0; await api('import', d); await refresh(); render(); toast('History imported'); }catch(_){ alert('Import failed — not a valid history export.'); } };
   rd.readAsText(f); e.target.value='';
 };
-document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
 $('#overlay').onclick=closeDrawer;
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDrawer(); });
 

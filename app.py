@@ -95,10 +95,13 @@ def init_db():
             logins INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS parked(
-            asset TEXT PRIMARY KEY,
+            asset TEXT NOT NULL,
+            stream TEXT NOT NULL DEFAULT 'w168',
             reason TEXT NOT NULL,
             note TEXT NOT NULL DEFAULT '',
-            parked_at TEXT NOT NULL
+            parked_at TEXT NOT NULL,
+            auto INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(asset, stream)
         );
         CREATE TABLE IF NOT EXISTS report_files(
             week TEXT PRIMARY KEY,
@@ -128,6 +131,21 @@ def init_db():
         con.commit()
     except sqlite3.OperationalError:
         pass
+    # --- migration: scope parks to a stream so the two boards stay independent ---
+    pcols = [r[1] for r in con.execute("PRAGMA table_info(parked)")]
+    if pcols and "stream" not in pcols:
+        con.execute("ALTER TABLE parked RENAME TO parked_legacy")
+        con.execute(
+            "CREATE TABLE parked(asset TEXT NOT NULL, stream TEXT NOT NULL DEFAULT 'w168',"
+            " reason TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', parked_at TEXT NOT NULL,"
+            " auto INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(asset, stream))")
+        # auto-parks could only have come from the 48hr ingest; manual parks were on the 168hr board
+        con.execute(
+            "INSERT INTO parked(asset, stream, reason, note, parked_at, auto)"
+            " SELECT asset, CASE WHEN COALESCE(auto,0)=1 THEN 'w48' ELSE 'w168' END,"
+            " reason, note, parked_at, COALESCE(auto,0) FROM parked_legacy")
+        con.execute("DROP TABLE parked_legacy")
+        con.commit()
     # --- migration: attribution column on comments (safe on re-deploy) ---
     try:
         con.execute("ALTER TABLE comments ADD COLUMN by_email TEXT NOT NULL DEFAULT ''")
@@ -307,11 +325,12 @@ def state():
             assets[r["asset"]]["comments"].append({
                 "ts": r["ts"], "text": r["text"],
                 "by": (r["by_email"] if "by_email" in r.keys() else "") or ""})
-    parked = {}
+    parked = {"w168": {}, "w48": {}}
     for r in d.execute("SELECT * FROM parked"):
-        k = r.keys()
-        parked[r["asset"]] = {"reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"],
-                              "auto": bool(r["auto"]) if "auto" in k else False}
+        st = r["stream"] if "stream" in r.keys() else "w168"
+        parked.setdefault(st, {})[r["asset"]] = {
+            "reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"],
+            "auto": bool(r["auto"])}
     w48 = {r["week"]: {"uploadedAt": r["uploaded_at"], "filename": r["filename"], "ids": []}
            for r in d.execute("SELECT * FROM weeks48")}
     a48 = {}
@@ -409,14 +428,15 @@ def ingest48():
         bad_loc = (a.get("suitable") or "").strip().lower() == "no"
         bad_reach = (a.get("reachable") or "").strip().lower() == "no"
         if bad_loc or bad_reach:
-            if not d.execute("SELECT 1 FROM parked WHERE asset=?", (aid,)).fetchone():
+            if not d.execute("SELECT 1 FROM parked WHERE asset=? AND stream='w48'",
+                             (aid,)).fetchone():
                 detail = []
                 if bad_loc:
                     detail.append("location flagged unsuitable")
                 if bad_reach:
                     detail.append("not reliably reachable")
-                d.execute("INSERT INTO parked(asset, reason, note, parked_at, auto)"
-                          " VALUES(?,?,?,?,1)",
+                d.execute("INSERT INTO parked(asset, stream, reason, note, parked_at, auto)"
+                          " VALUES(?,'w48',?,?,?,1)",
                           (aid, "unsuitable_location" if bad_loc else "not_reachable",
                            "Auto-parked from 48hr report — " + ", ".join(detail), now()))
                 auto_parked.append(aid)
@@ -433,7 +453,7 @@ def unpark_auto():
     """Release every auto-parked camera in one action."""
     d = db()
     n = d.execute("SELECT COUNT(*) c FROM parked WHERE auto=1").fetchone()["c"]
-    d.execute("DELETE FROM parked WHERE auto=1")
+    d.execute("DELETE FROM parked WHERE auto=1")  # auto-parks only ever exist on the 48hr stream
     log_action("unparked", "", f"released {n} auto-parked cameras")
     d.commit()
     return jsonify({"ok": True, "released": n})
@@ -509,12 +529,13 @@ def import_state():
 def park():
     p = request.get_json(force=True)
     aid, reason, note = p.get("id"), p.get("reason", ""), (p.get("note") or "").strip()
+    stream = p.get("stream") or "w168"
     if not aid or not reason:
         return jsonify({"error": "id and reason required"}), 400
     d = db()
     user = cur_user()
-    d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at, auto)"
-              " VALUES(?,?,?,?,0)", (aid, reason, note, now()))
+    d.execute("INSERT OR REPLACE INTO parked(asset, stream, reason, note, parked_at, auto)"
+              " VALUES(?,?,?,?,?,0)", (aid, stream, reason, note, now()))
     log_action("parked", aid, reason + (f" — {note}" if note else ""))
     d.commit()
     return jsonify({"ok": True})
@@ -525,10 +546,11 @@ def park():
 def unpark():
     p = request.get_json(force=True)
     aid = p.get("id")
+    stream = p.get("stream") or "w168"
     if not aid:
         return jsonify({"error": "id required"}), 400
     d = db()
-    d.execute("DELETE FROM parked WHERE asset=?", (aid,))
+    d.execute("DELETE FROM parked WHERE asset=? AND stream=?", (aid, stream))
     log_action("unparked", aid, "returned to triage")
     d.commit()
     return jsonify({"ok": True})
