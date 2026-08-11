@@ -150,6 +150,15 @@ tr.asset{cursor:pointer}
 .wdot.on{background:var(--red);border-color:var(--red)}
 .wdot.fx{background:var(--green);border-color:var(--green)}
 .trend-arrow{font-weight:900}
+.fleet-row{display:flex;gap:26px;align-items:stretch;padding:14px 16px 6px;flex-wrap:wrap}
+.fleet-big .n{font-size:40px;font-weight:900;line-height:1;color:var(--red)}
+.fleet-big .l{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.fleet-big .s{font-size:12px;color:var(--muted);margin-top:5px}
+.fleet-stats{display:flex;flex-direction:column;justify-content:center;gap:6px;border-left:1px solid var(--line);padding-left:24px}
+.fleet-stats>div{display:flex;gap:10px;align-items:baseline;font-size:12.5px}
+.fleet-stats .k{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);min-width:88px}
+.fleet-stats .v{font-family:var(--mono);font-weight:600}
+.fleet-stats .wk{color:var(--muted);font-weight:400;font-size:11px}
 /* empty / dropzone */
 .drop{border:2px dashed #B9C0B7;border-radius:6px;padding:70px 30px;text-align:center;background:#F5F6F3;margin-top:24px;transition:border-color .12s,background .12s}
 .drop.hot{border-color:var(--slate);background:#ECEFE9}
@@ -395,9 +404,21 @@ function parse48(rows, hi){
     });
   }
   if(!assets.length) throw new Error('No camera rows found in the 48-hour file.');
+  // trailer block after the data: a cell reading "OnHireAssets" then the fleet count below it
+  let fleetSize=null;
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[];
+    if((r[0]||'').toString().trim().toLowerCase()==='onhireassets'){
+      for(let j=i+1;j<Math.min(i+4,rows.length);j++){
+        const v=num((rows[j]||[])[0]);
+        if(v>0){ fleetSize=Math.round(v); break; }
+      }
+      break;
+    }
+  }
   const reportDate = assets.map(a=>a.snapshotDate).filter(Boolean).sort().pop()
                      || new Date().toISOString().slice(0,10);
-  return {kind:'w48', reportDate, assets};
+  return {kind:'w48', reportDate, assets, fleetSize};
 }
 
 async function ingest(reportDate, assets, fileBase64, fileName){
@@ -407,8 +428,8 @@ async function ingest(reportDate, assets, fileBase64, fileName){
   await refresh();
   return res.reappeared || [];
 }
-async function ingest48(reportDate, assets, fileName){
-  const res = await api('ingest48', {reportDate, assets, fileName});
+async function ingest48(reportDate, assets, fileName, fleetSize){
+  const res = await api('ingest48', {reportDate, assets, fileName, fleetSize});
   await refresh();
   return res;
 }
@@ -557,7 +578,8 @@ function render168(){
     <div class="t-block" onclick="go('all')">
       <div class="t-label">Total offline &gt;168h</div>
       <div class="t-num">${open.length}</div>
-      <div class="t-sub">${A.length} reported &middot; ${fixed.length} fixed &middot; ${open.length} remaining${wowDelta()}</div>
+      <div class="t-sub">${A.length} reported &middot; ${fixed.length} fixed &middot; ${open.length} remaining${wowDelta()}${
+        (()=>{const p=fleetPct(A.length, S.currentWeek); return p==null?'':` &middot; <span style="color:#C8D3DB">${fmtPct(p)} of fleet</span>`;})()}</div>
     </div>
     <div class="t-block" onclick="go('all','__longest')">
       <div class="t-label">Longest offline</div>
@@ -587,6 +609,25 @@ function render168(){
 }
 
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
+// The fleet count only ships in the 48hr export, but both reports run the same Friday,
+// so allow a few days' slack when matching a 168hr week to a fleet figure.
+function fleetFor(week){
+  const F=S.fleet||{};
+  if(F[week]) return F[week];
+  const t=Date.parse(week+'T00:00:00Z');
+  if(isNaN(t)) return null;
+  let best=null, bestGap=Infinity;
+  for(const [w,n] of Object.entries(F)){
+    const gap=Math.abs(Date.parse(w+'T00:00:00Z')-t)/86400000;
+    if(gap<=6 && gap<bestGap){ best=n; bestGap=gap; }
+  }
+  return best;
+}
+function fleetPct(count, week){
+  const f=fleetFor(week);
+  return f? (count/f*100) : null;
+}
+function fmtPct(v){ return v==null? '—' : (v<10? v.toFixed(2) : v.toFixed(1))+'%'; }
 function wowDelta(){
   const m = movement(); if(!m||!m.P) return '';
   const d = (S.weeks[m.W].ids||[]).length - (S.weeks[m.P].ids||[]).length;
@@ -709,7 +750,9 @@ function renderTrends(){
   const m = movement();
   const ws = weeksOrdered();
   if(!m || ws.length<2){
-    $('#main').innerHTML = '<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Trends need at least two weekly reports. Upload more history and this tab lights up: in/out movement, chronic cameras, branch trajectories.</div>';
+    const one = ws.length===1 ? [{week:ws[0], total:((S.weeks[ws[0]]||{}).ids||[]).length}] : [];
+    $('#main').innerHTML = (one.length? fleetBlock(one, 'over 168 hours') : '') +
+      '<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Week-over-week trends need at least two weekly reports. Upload more history and this fills in: in/out movement, chronic cameras, branch trajectories.</div>';
     return;
   }
   const sel = {newIn:m.newIn, returned:m.returned, carried:m.carried, cleared:m.cleared}[trendSel]||[];
@@ -732,6 +775,7 @@ function renderTrends(){
     <div class="mcard car ${trendSel==='carried'?'on':''}" onclick="trendSel='carried';render()"><div class="n">${m.carried.length}</div><div class="l">Carried over</div><div class="s">still down from last report</div></div>
     <div class="mcard clr ${trendSel==='cleared'?'on':''}" onclick="trendSel='cleared';render()"><div class="n">${m.cleared.length}</div><div class="l">Cleared</div><div class="s">off the report since last week</div></div>
   </div>
+  ${fleetBlock(series, 'over 168 hours')}
   <div class="card">
     <h2>Weekly totals — ${ws.length} reports (${ws[0]} → ${m.W})</h2>
     <div style="padding:14px 16px">${trendChart(series)}</div>
@@ -776,6 +820,62 @@ function renderTrends(){
     </div>
   </div>`;
 }
+// series: [{week,total}], label describes the threshold
+function fleetBlock(series, label){
+  const pts = series.map(s=>({week:s.week, total:s.total, fleet:fleetFor(s.week)}))
+                    .filter(p=>p.fleet);
+  if(!pts.length){
+    return `<div class="card"><h2>% of fleet offline</h2>
+      <div style="padding:24px 16px;color:var(--muted);font-size:13px">
+        No fleet size recorded yet. The on-hire count comes from the <b>OnHireAssets</b> line at the
+        bottom of the 48-hour export — upload one and this tracker fills in for both boards.</div></div>`;
+  }
+  const cur=pts[pts.length-1], prev=pts.length>1?pts[pts.length-2]:null;
+  const curPct=cur.total/cur.fleet*100;
+  const prevPct=prev?prev.total/prev.fleet*100:null;
+  const delta=prevPct==null?null:curPct-prevPct;
+  const avg=pts.reduce((s,p)=>s+p.total/p.fleet*100,0)/pts.length;
+  const best=pts.reduce((m,p)=>(p.total/p.fleet<m.total/m.fleet?p:m));
+  const worst=pts.reduce((m,p)=>(p.total/p.fleet>m.total/m.fleet?p:m));
+  return `<div class="card">
+    <h2>% of fleet offline ${esc(label)} &mdash; ${cur.fleet.toLocaleString()} assets on hire</h2>
+    <div class="fleet-row">
+      <div class="fleet-big">
+        <div class="n">${fmtPct(curPct)}</div>
+        <div class="l">this week</div>
+        <div class="s">${cur.total} of ${cur.fleet.toLocaleString()} on hire${
+          delta==null?'':` &middot; <span style="color:${delta>0?'var(--red)':delta<0?'var(--green)':'var(--muted)'}">${delta>0?'+':''}${delta.toFixed(2)}pp vs last wk</span>`}</div>
+      </div>
+      <div class="fleet-stats">
+        <div><span class="k">Average</span><span class="v">${fmtPct(avg)}</span></div>
+        <div><span class="k">Best week</span><span class="v">${fmtPct(best.total/best.fleet*100)} <span class="wk">${esc(best.week)}</span></span></div>
+        <div><span class="k">Worst week</span><span class="v">${fmtPct(worst.total/worst.fleet*100)} <span class="wk">${esc(worst.week)}</span></span></div>
+      </div>
+    </div>
+    <div style="padding:4px 16px 14px">${fleetChart(pts)}</div>
+  </div>`;
+}
+
+function fleetChart(pts){
+  const W=920,H=170,padL=44,padR=12,padB=30,padT=14;
+  const n=pts.length;
+  const vals=pts.map(p=>p.total/p.fleet*100);
+  const mx=Math.max(...vals)*1.25 || 1;
+  const x=i=> padL + (n<2? (W-padL-padR)/2 : i*((W-padL-padR)/(n-1)));
+  const y=v=> (H-padB) - v/mx*(H-padB-padT);
+  const line=pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(' ');
+  const area=`M${x(0).toFixed(1)},${(H-padB)} `+pts.map((p,i)=>`L${x(i).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(' ')+` L${x(n-1).toFixed(1)},${H-padB} Z`;
+  const ticks=[0,mx/2,mx];
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;font-family:var(--mono)">
+    ${ticks.map(t=>`<line x1="${padL}" x2="${W-padR}" y1="${y(t)}" y2="${y(t)}" stroke="#E5E8E2"/>
+      <text x="${padL-6}" y="${y(t)+3}" font-size="10" fill="#8A94A0" text-anchor="end">${t.toFixed(1)}%</text>`).join('')}
+    <path d="${area}" fill="#C0392B" opacity=".10"/>
+    <path d="${line}" fill="none" stroke="#C0392B" stroke-width="2.2"/>
+    ${pts.map((p,i)=>`<circle cx="${x(i)}" cy="${y(vals[i])}" r="3.2" fill="#C0392B"><title>${p.week}: ${vals[i].toFixed(2)}% (${p.total} of ${p.fleet})</title></circle>`).join('')}
+    ${pts.map((p,i)=> n<=14 || i%2===0 || i===n-1 ? `<text x="${x(i)}" y="${H-8}" font-size="9.5" fill="#8A94A0" text-anchor="middle">${p.week.slice(5)}</text>`:'').join('')}
+  </svg>`;
+}
+
 function trendChart(series){
   const W=920,H=190,pad=34,pb=44;
   const n=series.length, mx=Math.max(...series.map(s=>s.total),1);
@@ -918,7 +1018,8 @@ function render48(W){
       <div class="t-label">Total offline &gt;48h</div>
       <div class="t-num">${active.length}</div>
       <div class="t-sub">${all.length} reported${parkedList.length?` &middot; ${parkedList.length} parked`:''}${
-        newIn!==null?` &middot; <span style="color:${newIn>out?'#E58676':'#6FBF8E'}">${newIn>out?'+':''}${newIn-out} vs last wk</span> <span style="color:#7E909E">(+${newIn} in / &minus;${out} out)</span>`:''}</div>
+        newIn!==null?` &middot; <span style="color:${newIn>out?'#E58676':'#6FBF8E'}">${newIn>out?'+':''}${newIn-out} vs last wk</span>`:''}${
+        (()=>{const p=fleetPct(all.length, W.currentWeek); return p==null?'':` &middot; <span style="color:#C8D3DB">${fmtPct(p)} of fleet</span>`;})()}</div>
     </div>
     <div class="t-block" onclick="go('w48all','__longest')">
       <div class="t-label">Longest offline</div>
@@ -1022,7 +1123,9 @@ function goBranch48(b){ view='w48all'; branchFilter=b; w48Search=''; render(); w
 function renderTrends48(W){
   const wks=Object.keys(W.weeks).sort();
   if(wks.length<2){
-    $('#main').innerHTML='<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Trends need at least two 48-hour reports. Upload more and this fills in: week-over-week movement, chronic cameras, branch trajectories.</div>';
+    const one = wks.length===1 ? [{week:wks[0], total:((W.weeks[wks[0]]||{}).ids||[]).length}] : [];
+    $('#main').innerHTML = (one.length? fleetBlock(one, 'over 48 hours') : '') +
+      '<div class="card" style="padding:34px;text-align:center;color:var(--muted)">Week-over-week trends need at least two 48-hour reports. Upload more and this fills in: movement, chronic cameras, branch trajectories.</div>';
     return;
   }
   const series=wks.map((w,i)=>{
@@ -1041,6 +1144,7 @@ function renderTrends48(W){
   const brRows=Object.entries(brs).map(([b,m])=>({b,vals:last.map(w=>m[w]||0)}))
     .sort((a,b)=>b.vals[b.vals.length-1]-a.vals[a.vals.length-1]);
   $('#main').innerHTML=`
+  ${fleetBlock(series, 'over 48 hours')}
   <div class="card"><h2>Weekly totals — ${wks.length} × 48hr reports (${wks[0]} → ${wks[wks.length-1]})</h2>
     <div style="padding:14px 16px">${trendChart(series)}</div></div>
   <div class="tgrid">
@@ -1229,20 +1333,20 @@ async function handleFiles(fileList){
     try{
       const bytes=await readFile(f);
       const p=parseReport(bytes);
-      parsed.push({name:f.name, kind:p.kind, reportDate:p.reportDate, assets:p.assets, b64:toB64(bytes)});
+      parsed.push({name:f.name, kind:p.kind, reportDate:p.reportDate, assets:p.assets, fleetSize:p.fleetSize, b64:toB64(bytes)});
     }catch(err){ failed.push(`${f.name}: ${err.message}`); }
   }
   if(!parsed.length){ alert('No readable reports.\n\n'+failed.join('\n')); return; }
   parsed.sort((a,b)=>a.reportDate.localeCompare(b.reportDate));
-  let done=0, cam168=0, autoParked=0, sent=0, early=0;
+  let done=0, cam168=0, autoParked=0, sent=0, early=0, fleetSeen=null;
   const w168=[], w48=[];
   for(const p of parsed){
     showProgress(`Uploading ${++done} of ${parsed.length} — ${p.kind==='w48'?'48hr':'168hr'} report ${p.reportDate}`);
     try{
       if(p.kind==='w48'){
-        const r=await ingest48(p.reportDate, p.assets, p.name);
+        const r=await ingest48(p.reportDate, p.assets, p.name, p.fleetSize);
         w48.push(p.reportDate); autoParked+=(r.autoParked||[]).length;
-        sent+=r.sentinels||0; early+=r.early||0;
+        sent+=r.sentinels||0; early+=r.early||0; if(r.fleet) fleetSeen=r.fleet;
       } else {
         await ingest(p.reportDate, p.assets, p.b64, p.name);
         w168.push(p.reportDate); cam168+=p.assets.length;
@@ -1260,6 +1364,7 @@ async function handleFiles(fileList){
     bits.push(`${w48.length} × 48hr report${w48.length>1?'s':''} · ${early} under 7 days`);
     if(autoParked) bits.push(`${autoParked} auto-parked as known issues`);
     if(sent) bits.push(`${sent} with no heartbeat`);
+    if(fleetSeen) bits.push(`fleet on hire ${fleetSeen}`);
   }
   toast(bits.join(' · '));
   if(failed.length) alert('Some files could not be loaded:\n\n'+failed.join('\n'));

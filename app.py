@@ -76,6 +76,11 @@ def init_db():
             snap TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS fleet(
+            week TEXT PRIMARY KEY,
+            on_hire INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS meta(
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -348,9 +353,11 @@ def state():
         if r["week"] in w48:
             w48[r["week"]]["ids"].append(r["asset"])
     cur = max(weeks.keys()) if weeks else None
+    fleet = {r["week"]: r["on_hire"] for r in d.execute("SELECT * FROM fleet")}
     cur48 = max(w48.keys()) if w48 else None
     return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets, "parked": parked,
-                    "w48": {"currentWeek": cur48, "weeks": w48, "assets": a48}})
+                    "w48": {"currentWeek": cur48, "weeks": w48, "assets": a48},
+                    "fleet": fleet})
 
 
 @app.post("/api/ingest")
@@ -406,6 +413,14 @@ def ingest48():
     d = db()
     d.execute("INSERT OR REPLACE INTO weeks48(week, uploaded_at, filename) VALUES(?,?,?)",
               (week, now(), p.get("fileName", "")))
+    fleet = p.get("fleetSize")
+    try:
+        fleet = int(fleet) if fleet not in (None, "") else None
+    except (TypeError, ValueError):
+        fleet = None
+    if fleet and fleet > 0:
+        d.execute("INSERT OR REPLACE INTO fleet(week, on_hire, source) VALUES(?,?,?)",
+                  (week, fleet, p.get("fileName", "")))
     auto_parked, sentinels, early = [], 0, 0
     for a in rows:
         aid = (a.get("id") or "").strip()
@@ -441,10 +456,11 @@ def ingest48():
                            "Auto-parked from 48hr report — " + ", ".join(detail), now()))
                 auto_parked.append(aid)
     log_action("upload48", "", f"48hr report {week} — {len(rows)} cameras, {early} under 7 days, "
-                              f"{len(auto_parked)} auto-parked, {sentinels} no heartbeat")
+                              f"{len(auto_parked)} auto-parked, {sentinels} no heartbeat"
+                              + (f", fleet on hire {fleet}" if fleet else ""))
     d.commit()
     return jsonify({"ok": True, "week": week, "count": len(rows), "autoParked": auto_parked,
-                    "sentinels": sentinels, "early": early})
+                    "sentinels": sentinels, "early": early, "fleet": fleet})
 
 
 @app.post("/api/unpark_auto")

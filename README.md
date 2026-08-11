@@ -60,6 +60,15 @@ into its own Known issues list — these never touch the 168-hour board. Auto-pa
 badged AUTO and releasable in bulk; a manual park is never overwritten. Branch names are normalised across streams ("Melbourne Cameras" →
 "Melbourne") so history doesn't split.
 
+## Fleet size / % offline
+The 48-hour export carries an `OnHireAssets` trailer (a label row then the count) after a
+blank row below the data. That count is captured per week into the `fleet` table and drives
+a **% of fleet offline** tracker in Trends on *both* boards — headline for the week, delta in
+percentage points, average / best / worst week, and a weekly line chart. The figure also
+appears on each triage strip. The 168-hour export has no fleet count, so it matches the
+48-hour figure from the same week (within 6 days); if no 48-hour report has been uploaded,
+the tracker explains what's missing rather than showing a wrong number.
+
 ## Bulk upload / recovery
 The file picker and drop zone both accept **many files at once**. Reports are parsed first,
 sorted oldest → newest, then ingested in order, so history rebuilds correctly regardless of
