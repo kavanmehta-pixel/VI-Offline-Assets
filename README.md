@@ -37,6 +37,23 @@ user and action. `GET /api/users` returns the access roster; `GET /api/activity`
 - **Trends tab** — movement cards (new / boomerangs / carried / cleared), weekly totals chart with in/out flow, chronic-camera leaderboard with presence timelines, branch week-over-week matrix.
 - **Drawer** — per-camera weekly presence dots and days-offline trajectory.
 
+## Two report streams
+The uploader auto-detects which export it's been given — no separate button:
+
+| | 168-hour weekly | 48-hour weekly |
+|---|---|---|
+| Detected by | `Asset #` header + "as of DATE" title row | `Asset_No` header, row 1 |
+| Report date | from the title row | max `latest_snapshot_date` in the file |
+| Shown on | main board (Overview / Pickles / All offline) | **48-hour** tab |
+
+Both build independent week-over-week history. The 48-hour tab surfaces **early warning**
+(under 7 days — not yet on the 168hr board), flags rows whose heartbeat is the hub's
+1900-01-01 placeholder (durations excluded from the longest-offline figure), and
+**auto-parks** cameras the hub flags as unsuitable-location or not-reliably-reachable
+into Known issues. Auto-parks are badged AUTO and releasable in bulk; a manual park is
+never overwritten. Branch names are normalised across streams ("Melbourne Cameras" →
+"Melbourne") so history doesn't split.
+
 ## Bulk upload / recovery
 The file picker and drop zone both accept **many files at once**. Reports are parsed first,
 sorted oldest → newest, then ingested in order, so history rebuilds correctly regardless of

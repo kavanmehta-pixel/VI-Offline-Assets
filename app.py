@@ -56,6 +56,26 @@ def init_db():
             ts TEXT NOT NULL,
             PRIMARY KEY(asset, week)
         );
+        CREATE TABLE IF NOT EXISTS weeks48(
+            week TEXT PRIMARY KEY,
+            uploaded_at TEXT NOT NULL,
+            filename TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS assets48(
+            id TEXT PRIMARY KEY,
+            snap TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS appearances48(
+            asset TEXT NOT NULL,
+            week TEXT NOT NULL,
+            PRIMARY KEY(asset, week)
+        );
+        CREATE TABLE IF NOT EXISTS snapshots48(
+            asset TEXT NOT NULL,
+            week TEXT NOT NULL,
+            snap TEXT NOT NULL,
+            PRIMARY KEY(asset, week)
+        );
         CREATE TABLE IF NOT EXISTS meta(
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -102,6 +122,12 @@ def init_db():
         """
     )
     con.commit()
+    # --- migration: auto-park flag (safe on re-deploy) ---
+    try:
+        con.execute("ALTER TABLE parked ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
     # --- migration: attribution column on comments (safe on re-deploy) ---
     try:
         con.execute("ALTER TABLE comments ADD COLUMN by_email TEXT NOT NULL DEFAULT ''")
@@ -283,9 +309,29 @@ def state():
                 "by": (r["by_email"] if "by_email" in r.keys() else "") or ""})
     parked = {}
     for r in d.execute("SELECT * FROM parked"):
-        parked[r["asset"]] = {"reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"]}
+        k = r.keys()
+        parked[r["asset"]] = {"reason": r["reason"], "note": r["note"], "parkedAt": r["parked_at"],
+                              "auto": bool(r["auto"]) if "auto" in k else False}
+    w48 = {r["week"]: {"uploadedAt": r["uploaded_at"], "filename": r["filename"], "ids": []}
+           for r in d.execute("SELECT * FROM weeks48")}
+    a48 = {}
+    for r in d.execute("SELECT * FROM assets48"):
+        a48[r["id"]] = {"snap": json.loads(r["snap"]), "appearances": [], "days": {}}
+    for r in d.execute("SELECT * FROM snapshots48 ORDER BY week"):
+        if r["asset"] not in a48:
+            a48[r["asset"]] = {"snap": {}, "appearances": [], "days": {}}
+        snap = json.loads(r["snap"])
+        a48[r["asset"]]["snap"] = snap
+        a48[r["asset"]]["days"][r["week"]] = snap.get("daysOffline", 0)
+    for r in d.execute("SELECT * FROM appearances48 ORDER BY week"):
+        if r["asset"] in a48:
+            a48[r["asset"]]["appearances"].append(r["week"])
+        if r["week"] in w48:
+            w48[r["week"]]["ids"].append(r["asset"])
     cur = max(weeks.keys()) if weeks else None
-    return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets, "parked": parked})
+    cur48 = max(w48.keys()) if w48 else None
+    return jsonify({"currentWeek": cur, "weeks": weeks, "assets": assets, "parked": parked,
+                    "w48": {"currentWeek": cur48, "weeks": w48, "assets": a48}})
 
 
 @app.post("/api/ingest")
@@ -324,6 +370,73 @@ def ingest():
                + (f", {len(reappeared)} repeat" if reappeared else ""))
     d.commit()
     return jsonify({"ok": True, "week": week, "count": len(rows), "reappeared": reappeared})
+
+
+@app.post("/api/ingest48")
+@require_auth
+def ingest48():
+    """48-hour weekly snapshot. Same week-history model as the 168hr stream, separate stream."""
+    p = request.get_json(force=True)
+    rows = p.get("assets", [])
+    week = (p.get("reportDate") or "").strip()
+    if not rows:
+        return jsonify({"error": "assets required"}), 400
+    if not week:
+        # report date = latest snapshot date present in the file
+        week = max((a.get("snapshotDate") or "") for a in rows) or now()[:10]
+    d = db()
+    d.execute("INSERT OR REPLACE INTO weeks48(week, uploaded_at, filename) VALUES(?,?,?)",
+              (week, now(), p.get("fileName", "")))
+    auto_parked, sentinels, early = [], 0, 0
+    for a in rows:
+        aid = (a.get("id") or "").strip()
+        if not aid:
+            continue
+        if a.get("sentinel"):
+            sentinels += 1
+        if not a.get("sentinel") and (a.get("daysOffline") or 0) < 7:
+            early += 1
+        d.execute("INSERT OR REPLACE INTO snapshots48(asset, week, snap) VALUES(?,?,?)",
+                  (aid, week, json.dumps(a)))
+        d.execute("INSERT OR IGNORE INTO appearances48(asset, week) VALUES(?,?)", (aid, week))
+        latest = d.execute("SELECT MAX(week) w FROM appearances48 WHERE asset=?",
+                           (aid,)).fetchone()["w"]
+        if latest == week:
+            d.execute("INSERT OR REPLACE INTO assets48(id, snap) VALUES(?,?)",
+                      (aid, json.dumps(a)))
+        # auto-park cameras the hub flags as badly positioned / unreachable,
+        # but never overwrite a park a human already set
+        bad_loc = (a.get("suitable") or "").strip().lower() == "no"
+        bad_reach = (a.get("reachable") or "").strip().lower() == "no"
+        if bad_loc or bad_reach:
+            if not d.execute("SELECT 1 FROM parked WHERE asset=?", (aid,)).fetchone():
+                detail = []
+                if bad_loc:
+                    detail.append("location flagged unsuitable")
+                if bad_reach:
+                    detail.append("not reliably reachable")
+                d.execute("INSERT INTO parked(asset, reason, note, parked_at, auto)"
+                          " VALUES(?,?,?,?,1)",
+                          (aid, "unsuitable_location" if bad_loc else "not_reachable",
+                           "Auto-parked from 48hr report — " + ", ".join(detail), now()))
+                auto_parked.append(aid)
+    log_action("upload48", "", f"48hr report {week} — {len(rows)} cameras, {early} under 7 days, "
+                              f"{len(auto_parked)} auto-parked, {sentinels} no heartbeat")
+    d.commit()
+    return jsonify({"ok": True, "week": week, "count": len(rows), "autoParked": auto_parked,
+                    "sentinels": sentinels, "early": early})
+
+
+@app.post("/api/unpark_auto")
+@require_auth
+def unpark_auto():
+    """Release every auto-parked camera in one action."""
+    d = db()
+    n = d.execute("SELECT COUNT(*) c FROM parked WHERE auto=1").fetchone()["c"]
+    d.execute("DELETE FROM parked WHERE auto=1")
+    log_action("unparked", "", f"released {n} auto-parked cameras")
+    d.commit()
+    return jsonify({"ok": True, "released": n})
 
 
 @app.post("/api/fix")
@@ -400,8 +513,8 @@ def park():
         return jsonify({"error": "id and reason required"}), 400
     d = db()
     user = cur_user()
-    d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at) VALUES(?,?,?,?)",
-              (aid, reason, note, now()))
+    d.execute("INSERT OR REPLACE INTO parked(asset, reason, note, parked_at, auto)"
+              " VALUES(?,?,?,?,0)", (aid, reason, note, now()))
     log_action("parked", aid, reason + (f" — {note}" if note else ""))
     d.commit()
     return jsonify({"ok": True})

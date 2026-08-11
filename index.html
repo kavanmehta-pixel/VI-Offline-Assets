@@ -187,6 +187,20 @@ tr.asset{cursor:pointer}
 .act-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .act-filters select{border:1px solid var(--line);border-radius:3px;padding:6px 10px;font-family:var(--mono);font-size:12px;background:#fff}
 .by-tag{font-family:var(--mono);font-size:10.5px;color:var(--muted);display:block;margin-top:3px}
+.w48-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:900px){.w48-cards{grid-template-columns:repeat(2,1fr)}}
+.w48-card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:14px 16px;border-top:3px solid var(--line)}
+.w48-card .n{font-size:30px;font-weight:900;line-height:1.1}
+.w48-card .l{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:2px}
+.w48-card .s{font-size:11px;color:var(--muted);margin-top:4px}
+.w48-card.early{border-top-color:var(--red)}
+.w48-card.tot{border-top-color:var(--slate)}
+.w48-card.dq{border-top-color:var(--amber)}
+.w48-card.park{border-top-color:var(--orange)}
+.tag-early{background:var(--red-bg);color:var(--red);font-size:9px;font-weight:800;letter-spacing:.08em;padding:2px 6px;border-radius:2px;margin-left:6px}
+.tag-dq{background:var(--amber-bg);color:var(--amber);font-size:9px;font-weight:800;letter-spacing:.08em;padding:2px 6px;border-radius:2px;margin-left:6px;cursor:help}
+.tag-flag{background:var(--orange-bg);color:var(--orange);font-size:9px;font-weight:800;letter-spacing:.08em;padding:2px 6px;border-radius:2px;margin-left:6px}
+.loc{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px}
 .rpt-row{display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid #EFF1ED;gap:14px}
 .rpt-row:last-child{border-bottom:none}
 .rpt-row:hover{background:#F7F8F5}
@@ -245,6 +259,7 @@ input[type=file]{display:none}
     <button data-v="repaired">Repaired <span class="count" id="cFix">0</span></button>
     <button data-v="trends">Trends</button>
     <button data-v="known">Known issues <span class="count" id="cKn">0</span></button>
+    <button data-v="w48">48-hour <span class="count" id="c48">0</span></button>
     <button data-v="reports">Reports</button>
     <button data-v="activity">Activity log</button>
   </div>
@@ -273,16 +288,26 @@ let view='overview', branchFilter=null, sortKey='daysOffline', sortDir=-1, searc
 /* ================= parsing ================= */
 function num(v){ return parseFloat(String(v==null?'':v).replace(/,/g,''))||0; }
 function parseReport(data){
-  const wb = XLSX.read(data, {type:'array'});
+  // cellDates+raw gives real Date objects and real numbers; the formatted strings SheetJS
+  // returns otherwise use 2-digit years ("1/1/00"), which JS parses as 2000, not 1900.
+  const wb = XLSX.read(data, {type:'array', cellDates:true});
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:false});
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
+  const findHdr = (label) => rows.findIndex(r => (r||[]).some(v=>(v||'').toString().trim().toLowerCase()===label));
+  // 48hr export: header on row 1, snake_case columns, no title row
+  if(findHdr('asset_no') >= 0) return parse48(rows, findHdr('asset_no'));
+  // 168hr weekly export: title row with "as of DATE", header row starting "Asset #"
+  return parse168(rows);
+}
+
+function parse168(rows){
   let reportDate=null;
   for(const r of rows.slice(0,6)){
     const m=((r&&r[0])||'').toString().match(/as of (\d{4}-\d{2}-\d{2})/i);
     if(m){reportDate=m[1];break;}
   }
   const hi = rows.findIndex(r => ((r&&r[0])||'').toString().trim()==='Asset #');
-  if(hi<0) throw new Error('Could not find the "Asset #" header row — is this the weekly 168-hour offline report?');
+  if(hi<0) throw new Error('Unrecognised file — expected the 168-hour weekly export (an "Asset #" header) or the 48-hour export (an "Asset_No" header).');
   const H = rows[hi].map(h=>(h||'').toString().trim().toLowerCase());
   const col = n => H.findIndex(h=>h.startsWith(n));
   const c={a:col('asset #'),cu:col('customer'),m:col('monitored'),b:col('branch'),t:col('asset type'),
@@ -298,8 +323,7 @@ function parseReport(data){
       branch:((r[c.b])||'').toString().trim(),
       type:((r[c.t])||'').toString().trim(),
       lastHeartbeat:((r[c.hb])||'').toString().trim(),
-      hoursOffline:num(r[c.h]),
-      daysOffline:num(r[c.d]),
+      hoursOffline:num(r[c.h]), daysOffline:num(r[c.d]),
       reachable:((r[c.r])||'').toString().trim(),
       location:((r[c.l])||'').toString().trim(),
       pickles:/pickles/i.test(((r[c.cu])||'').toString())
@@ -307,7 +331,75 @@ function parseReport(data){
   }
   if(!assets.length) throw new Error('No camera rows found in the file.');
   if(!reportDate) reportDate = new Date().toISOString().slice(0,10);
-  return {reportDate, assets};
+  return {kind:'w168', reportDate, assets};
+}
+
+// Branch names differ between exports ("Melbourne Cameras" vs "Melbourne") — normalise so
+// the same branch doesn't split in two across streams.
+function normBranch(b){
+  // "Melbourne Cameras" -> "Melbourne", "South-West Qld Cameras - Toowoomba" -> "South-West Qld - Toowoomba",
+  // "Wellington Vision" -> "Wellington". Singular "Camera" is kept: "Canterbury Camera" is the real branch name.
+  return (b||'').toString()
+    .replace(/\s+Cameras\b/ig,'')
+    .replace(/\s+Vision$/i,'')
+    .replace(/\s{2,}/g,' ')
+    .trim();
+}
+function toDateStr(v){
+  if(v==null) return '';
+  if(v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0,19).replace('T',' ');
+  const s=v.toString().trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,19).replace('T',' ');
+  const d=new Date(s);
+  return isNaN(d) ? s : d.toISOString().slice(0,19).replace('T',' ');
+}
+// Excel stores the hub's null placeholder as 1900-01-01, which lands on 1899-12-31 once the
+// epoch offset is applied. Anything at or before 1900 is a placeholder, not a real reading.
+function isSentinelDate(v){
+  if(v==null || v==='') return true;
+  if(v instanceof Date) return isNaN(v) || v.getUTCFullYear() <= 1900;
+  const s=v.toString().trim();
+  if(!s) return true;
+  const m=s.match(/^(\d{4})-/);
+  return m ? +m[1] <= 1900 : false;
+}
+
+function parse48(rows, hi){
+  const H = rows[hi].map(h=>(h||'').toString().trim().toLowerCase());
+  const col = n => H.indexOf(n);
+  const c={a:col('asset_no'),cu:col('customer_name'),b:col('branch_description'),
+           ad:col('address'),su:col('suburb'),pc:col('postcode'),st:col('state'),
+           hb:col('last_heartbeat_time'),t:col('asset_type_name'),
+           r:col('is_reliably_reachable'),l:col('is_suitable_location'),
+           h:col('hours_offline'),d:col('days_offline'),sd:col('latest_snapshot_date')};
+  const assets=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[]; const a=((r[c.a])||'').toString().trim();
+    if(!a) continue;
+    if(!/^CAM/i.test(a)) continue;
+    const sentinel = isSentinelDate(r[c.hb]);
+    const hb = sentinel ? '' : toDateStr(r[c.hb]);
+    assets.push({
+      id:a, customer:((r[c.cu])||'').toString().trim(),
+      branch:normBranch(r[c.b]),
+      address:((r[c.ad])||'').toString().trim(),
+      suburb:((r[c.su])||'').toString().trim(),
+      postcode:((r[c.pc])||'').toString().trim(),
+      state:((r[c.st])||'').toString().trim(),
+      type:((r[c.t])||'').toString().trim(),
+      lastHeartbeat:hb,
+      hoursOffline:num(r[c.h]), daysOffline:num(r[c.d]),
+      reachable:((r[c.r])||'').toString().trim(),
+      suitable:((r[c.l])||'').toString().trim(),
+      snapshotDate:toDateStr(r[c.sd]).slice(0,10),
+      sentinel,
+      pickles:/pickles/i.test(((r[c.cu])||'').toString())
+    });
+  }
+  if(!assets.length) throw new Error('No camera rows found in the 48-hour file.');
+  const reportDate = assets.map(a=>a.snapshotDate).filter(Boolean).sort().pop()
+                     || new Date().toISOString().slice(0,10);
+  return {kind:'w48', reportDate, assets};
 }
 
 async function ingest(reportDate, assets, fileBase64, fileName){
@@ -317,6 +409,11 @@ async function ingest(reportDate, assets, fileBase64, fileName){
   await refresh();
   return res.reappeared || [];
 }
+async function ingest48(reportDate, assets, fileName){
+  const res = await api('ingest48', {reportDate, assets, fileName});
+  await refresh();
+  return res;
+}
 
 /* ================= derived ================= */
 function weekAssets(){
@@ -325,11 +422,19 @@ function weekAssets(){
 }
 function isFixed(rec){ return rec.fixes.some(f=>f.week===S.currentWeek); }
 function isParked(id){ return !!(S.parked&&S.parked[id]); }
+function assetAnyStream(id){
+  return (S.assets&&S.assets[id]) || ((S.w48||{}).assets||{})[id] || null;
+}
+function allParked(){
+  return Object.keys(S.parked||{}).map(assetAnyStream).filter(Boolean);
+}
 const PARK_REASONS = {
   'connection':'Connection issues',
   'install':'Incorrectly installed — client aware',
   'relocated':'Client relocated camera',
   'decommission':'Pending decommission',
+  'unsuitable_location':'Unsuitable location (hub flag)',
+  'not_reachable':'Not reliably reachable (hub flag)',
   'other':'Other known issue'
 };
 function appearCount(rec){ return rec.appearances.length; }
@@ -394,7 +499,7 @@ function render(){
 
   const A = weekAssets();
   const active = A.filter(r=>!isParked(r.snap.id));  // exclude parked from main views
-  const parkedList = A.filter(r=>isParked(r.snap.id));
+  const parkedList = allParked();
   const open = active.filter(r=>!isFixed(r));
   const fixed = active.filter(isFixed);
   const pk = active.filter(r=>r.snap.pickles);
@@ -405,6 +510,8 @@ function render(){
   $('#cAll').textContent = open.length;
   $('#cFix').textContent = fixed.length;
   $('#cKn').textContent = parkedList.length;
+  const W48=S.w48||{weeks:{},assets:{}};
+  $('#c48').textContent = W48.currentWeek ? ((W48.weeks[W48.currentWeek]||{}).ids||[]).length : 0;
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===view));
 
   // triage strip
@@ -447,6 +554,7 @@ function render(){
   else if(view==='known') renderKnown(parkedList);
   else if(view==='reports') renderReports();
   else if(view==='activity') renderActivity();
+  else if(view==='w48') renderW48();
 }
 function pct(a,b){ return b? Math.round(a/b*100) : 0; }
 function wowDelta(){
@@ -673,7 +781,7 @@ function renderKnown(parkedList){
   const groups = Object.entries(PARK_REASONS).filter(([k])=>byReason[k]&&byReason[k].length);
   $('#main').innerHTML = `<div class="card">
     <div class="tbl-hd"><h2>Known issues — parked cameras</h2>
-      <span class="tally">${parkedList.length} camera${parkedList.length!==1?'s':''} parked &middot; excluded from triage counts</span></div>
+      <span class="tally">${parkedList.length} camera${parkedList.length!==1?'s':''} parked &middot; excluded from triage counts${(()=>{const a=Object.values(S.parked||{}).filter(p=>p.auto).length; return a?` &middot; ${a} auto from 48hr flags`:'';})()}</span></div>
     ${groups.map(([k,label])=>{
       const items = byReason[k];
       return `<div class="park-group">
@@ -685,7 +793,7 @@ function renderKnown(parkedList){
             <td><span class="cust">${esc(a.customer)}</span></td>
             <td>${esc(a.branch)}</td>
             <td><span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span></td>
-            <td style="font-size:12px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.note)}">${esc(p.note||'')}</td>
+            <td style="font-size:12px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.note)}">${p.auto?'<span class="tag-flag">AUTO</span> ':''}${esc(p.note||'')}</td>
             <td style="text-align:right"><button class="unpark-btn" onclick="event.stopPropagation();doUnpark('${a.id}')">Return to triage</button></td>
           </tr>`;}).join('')}
         </tbody></table></div>`;}).join('')}
@@ -741,6 +849,117 @@ async function renderActivity(){
     </div>
     <div class="foot-note">Every fix, note, park and upload is recorded against the signed-in user. Most recent first, last 500 events.</div>`;
   }catch(e){ $('#main').innerHTML='<div class="card" style="padding:30px;color:var(--red)">Failed to load activity: '+esc(e.message)+'</div>'; }
+}
+
+let w48Filter='all', w48Search='';
+function renderW48(){
+  const W=S.w48||{currentWeek:null,weeks:{},assets:{}};
+  if(!W.currentWeek){
+    $('#main').innerHTML='<div class="card" style="padding:34px;text-align:center;color:var(--muted)">No 48-hour report loaded yet. Upload the <b>OffLine_Assets_Last_7_Days_over_48Hrs</b> export — it\'s detected automatically and kept separate from the 168-hour board.</div>';
+    return;
+  }
+  const wks=Object.keys(W.weeks).sort();
+  const ids=(W.weeks[W.currentWeek]||{}).ids||[];
+  const all=ids.map(id=>W.assets[id]).filter(Boolean);
+  const early=all.filter(r=>!r.snap.sentinel && r.snap.daysOffline<7);
+  const dq=all.filter(r=>r.snap.sentinel);
+  const flagged=all.filter(r=>{const s=r.snap; return (s.suitable||'').toLowerCase()==='no'||(s.reachable||'').toLowerCase()==='no';});
+  const autoParked=Object.entries(S.parked||{}).filter(([,p])=>p.auto).length;
+  const realMax=Math.max(0,...all.filter(r=>!r.snap.sentinel).map(r=>r.snap.daysOffline));
+  const prev=wks.length>1?wks[wks.length-2]:null;
+  const prevIds=prev?new Set((W.weeks[prev]||{}).ids||[]):null;
+  const newIn=prevIds?all.filter(r=>!prevIds.has(r.snap.id)).length:null;
+
+  let list=all;
+  if(w48Filter==='early') list=early;
+  else if(w48Filter==='dq') list=dq;
+  else if(w48Filter==='flagged') list=flagged;
+  if(w48Search){const q=w48Search.toLowerCase();
+    list=list.filter(r=>{const a=r.snap;return (a.id+' '+a.customer+' '+a.branch+' '+(a.suburb||'')+' '+(a.state||'')).toLowerCase().includes(q);});}
+  list=list.slice().sort((a,b)=>{
+    if(a.snap.sentinel!==b.snap.sentinel) return a.snap.sentinel?1:-1;  // real data first
+    return b.snap.daysOffline-a.snap.daysOffline;
+  });
+
+  const sel=f=>w48Filter===f?'style="outline:2px solid var(--slate)"':'';
+  $('#main').innerHTML=`
+  <div class="w48-cards">
+    <div class="w48-card early" ${sel('early')} onclick="w48Filter='early';render()" style="cursor:pointer">
+      <div class="n">${early.length}</div><div class="l">Early warning</div>
+      <div class="s">under 7 days — not yet on the 168hr board</div></div>
+    <div class="w48-card tot" ${sel('all')} onclick="w48Filter='all';render()" style="cursor:pointer">
+      <div class="n">${all.length}</div><div class="l">Total over 48hrs</div>
+      <div class="s">longest ${realMax}d${newIn!==null?` · ${newIn} new vs ${prev}`:''}</div></div>
+    <div class="w48-card dq" ${sel('dq')} onclick="w48Filter='dq';render()" style="cursor:pointer">
+      <div class="n">${dq.length}</div><div class="l">No heartbeat</div>
+      <div class="s">hub has no reading — durations unreliable</div></div>
+    <div class="w48-card park" ${sel('flagged')} onclick="w48Filter='flagged';render()" style="cursor:pointer">
+      <div class="n">${flagged.length}</div><div class="l">Hub-flagged</div>
+      <div class="s">${autoParked} auto-parked to Known issues</div></div>
+  </div>
+  <div class="card">
+    <div class="tbl-hd">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <h2>48-hour report — ${esc(W.currentWeek)}</h2>
+        <span class="tally">${list.length} shown${w48Filter!=='all'?` · <button class="back" onclick="w48Filter='all';render()">clear filter</button>`:''}</span>
+      </div>
+      <input placeholder="Filter asset / customer / branch / suburb" value="${esc(w48Search)}" oninput="w48Search=this.value;render()">
+    </div>
+    <table><thead><tr>
+      <th>Asset</th><th>Customer</th><th>Branch</th><th>Location</th>
+      <th>Type</th><th>Last heartbeat</th><th>Offline</th><th>Wks</th></tr></thead><tbody>
+    ${list.map(r=>{const a=r.snap, n=r.appearances.length;
+      const bad=(a.suitable||'').toLowerCase()==='no'||(a.reachable||'').toLowerCase()==='no';
+      return `<tr class="asset" onclick="openDrawer48('${esc(a.id)}')">
+        <td><span class="aid">${esc(a.id)}</span>${a.pickles?'<span class="pk-flag">PICKLES</span>':''}${!a.sentinel&&a.daysOffline<7?'<span class="tag-early">NEW</span>':''}${a.sentinel?'<span class="tag-dq" title="Hub has no heartbeat for this camera (1900-01-01 placeholder) — the offline duration is not reliable">NO HB</span>':''}${bad?'<span class="tag-flag">FLAGGED</span>':''}</td>
+        <td><span class="cust" title="${esc(a.customer)}">${esc(a.customer)}</span></td>
+        <td>${esc(a.branch)}</td>
+        <td><span class="loc" title="${esc([a.address,a.suburb,a.state,a.postcode].filter(Boolean).join(', '))}">${esc([a.suburb,a.state].filter(Boolean).join(', '))}</span></td>
+        <td style="font-family:var(--mono);font-size:11.5px">${esc(a.type)}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;white-space:nowrap">${a.sentinel?'<span style="color:var(--muted)">none recorded</span>':esc(a.lastHeartbeat)}</td>
+        <td>${a.sentinel?'<span class="dtag d1" title="Duration unreliable — no heartbeat">—</span>':`<span class="dtag ${sevClass(a.daysOffline)}">${fmtDays(a.daysOffline)}</span>`}</td>
+        <td style="font-family:var(--mono)">${n}</td>
+      </tr>`;}).join('')}
+    ${!list.length?'<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px">Nothing matches.</td></tr>':''}
+    </tbody></table>
+  </div>
+  <div class="foot-note">${wks.length} × 48hr report${wks.length>1?'s':''} loaded (${wks[0]} → ${W.currentWeek}) · durations for "no heartbeat" cameras are excluded from the longest-offline figure${autoParked?` · <button class="back" onclick="releaseAuto()">release ${autoParked} auto-parked</button>`:''}</div>`;
+}
+function openDrawer48(id){
+  const r=(S.w48&&S.w48.assets||{})[id]; if(!r) return;
+  const a=r.snap, wks=Object.keys((S.w48||{}).weeks||{}).sort();
+  const p=(S.parked||{})[id];
+  $('#drawer').innerHTML=`
+    <div class="dw-hd" style="position:relative">
+      <button class="x" onclick="closeDrawer()">&times;</button>
+      <div class="aid">${esc(a.id)} ${a.pickles?'<span class="pk-flag" style="vertical-align:3px">PICKLES</span>':''}</div>
+      <div class="c">${esc(a.customer)}</div>
+    </div>
+    <div class="dw-body">
+      ${a.sentinel?'<div class="hist-item appear" style="margin-bottom:14px"><b>No heartbeat recorded.</b> The hub has a 1900-01-01 placeholder for this camera, so the offline duration shown in the report is not meaningful.</div>':''}
+      <div class="kv">
+        <span class="k">Branch</span><span class="v">${esc(a.branch)}</span>
+        <span class="k">Site</span><span class="v">${esc([a.address,a.suburb,a.state,a.postcode].filter(Boolean).join(', ')||'—')}</span>
+        <span class="k">Asset type</span><span class="v">${esc(a.type)}</span>
+        <span class="k">Offline</span><span class="v">${a.sentinel?'unreliable':a.daysOffline+'d ('+a.hoursOffline+'h)'}</span>
+        <span class="k">Last heartbeat</span><span class="v">${a.sentinel?'none recorded':esc(a.lastHeartbeat)}</span>
+        <span class="k">Reliably reachable</span><span class="v">${esc(a.reachable||'—')}</span>
+        <span class="k">Suitable location</span><span class="v">${esc(a.suitable||'—')}</span>
+        <span class="k">Snapshot date</span><span class="v">${esc(a.snapshotDate||'—')}</span>
+        <span class="k">On 48hr reports</span><span class="v">${r.appearances.length} week${r.appearances.length>1?'s':''}</span>
+      </div>
+      ${p?`<div class="dw-sec">Parked</div><div class="hist-item">${esc(PARK_REASONS[p.reason]||p.reason)}${p.auto?' (automatic)':''}<br><span style="color:var(--muted)">${esc(p.note||'')}</span></div>
+        <button class="unpark-btn" style="margin-top:8px" onclick="doUnpark('${esc(a.id)}');closeDrawer()">Return to triage</button>`:''}
+      <div class="dw-sec">Weekly presence (48hr reports)</div>
+      <div class="dotrow">${wks.map(w=>{const on=r.appearances.includes(w); const d=(r.days||{})[w];
+        return `<span class="wdot ${on?'on':''}" title="${w}${on&&d!=null?': '+d+'d':''}"></span>`;}).join('')}</div>
+    </div>`;
+  $('#overlay').classList.add('on'); $('#drawer').classList.add('on');
+}
+function releaseAuto(){
+  if(!confirm('Release all auto-parked cameras back into triage?')) return;
+  api('unpark_auto').then(async r=>{ await refresh(); render(); toast(`Released ${r.released} cameras`); })
+    .catch(()=>toast('Failed — retry'));
 }
 
 async function renderReports(){
@@ -867,31 +1086,43 @@ function toB64(bytes){
 }
 async function handleFiles(fileList){
   const files=[...fileList]; if(!files.length) return;
-  // Parse everything first so one bad file can't abort a good batch
   const parsed=[], failed=[];
   for(const f of files){
     try{
       const bytes=await readFile(f);
-      const {reportDate, assets}=parseReport(bytes);
-      parsed.push({name:f.name, reportDate, assets, b64:toB64(bytes)});
+      const p=parseReport(bytes);
+      parsed.push({name:f.name, kind:p.kind, reportDate:p.reportDate, assets:p.assets, b64:toB64(bytes)});
     }catch(err){ failed.push(`${f.name}: ${err.message}`); }
   }
   if(!parsed.length){ alert('No readable reports.\n\n'+failed.join('\n')); return; }
-  // Oldest first so history builds in order and the board ends on the newest week
   parsed.sort((a,b)=>a.reportDate.localeCompare(b.reportDate));
-  let done=0, cameras=0;
-  const dupes=parsed.filter((p,i)=>i>0 && p.reportDate===parsed[i-1].reportDate).map(p=>p.reportDate);
+  let done=0, cam168=0, autoParked=0, sent=0, early=0;
+  const w168=[], w48=[];
   for(const p of parsed){
-    showProgress(`Uploading ${++done} of ${parsed.length} — report ${p.reportDate}`);
-    try{ await ingest(p.reportDate, p.assets, p.b64, p.name); cameras+=p.assets.length; }
-    catch(err){ failed.push(`${p.name}: ${err.message}`); }
+    showProgress(`Uploading ${++done} of ${parsed.length} — ${p.kind==='w48'?'48hr':'168hr'} report ${p.reportDate}`);
+    try{
+      if(p.kind==='w48'){
+        const r=await ingest48(p.reportDate, p.assets, p.name);
+        w48.push(p.reportDate); autoParked+=(r.autoParked||[]).length;
+        sent+=r.sentinels||0; early+=r.early||0;
+      } else {
+        await ingest(p.reportDate, p.assets, p.b64, p.name);
+        w168.push(p.reportDate); cam168+=p.assets.length;
+      }
+    }catch(err){ failed.push(`${p.name}: ${err.message}`); }
   }
   hideProgress();
-  branchFilter=null; view='overview'; render();
-  const weeks=[...new Set(parsed.map(p=>p.reportDate))].sort();
-  let msg=`${weeks.length} report${weeks.length>1?'s':''} loaded (${weeks[0]} → ${weeks[weeks.length-1]}) · ${cameras} camera rows`;
-  if(dupes.length) msg+=` · ${dupes.length} duplicate week${dupes.length>1?'s':''} merged`;
-  toast(msg);
+  branchFilter=null;
+  if(w168.length) view='overview'; else if(w48.length) view='w48';
+  render();
+  const bits=[];
+  if(w168.length) bits.push(`${w168.length} weekly 168hr report${w168.length>1?'s':''} · ${cam168} camera rows`);
+  if(w48.length){
+    bits.push(`${w48.length} × 48hr report${w48.length>1?'s':''} · ${early} under 7 days`);
+    if(autoParked) bits.push(`${autoParked} auto-parked as known issues`);
+    if(sent) bits.push(`${sent} with no heartbeat`);
+  }
+  toast(bits.join(' · '));
   if(failed.length) alert('Some files could not be loaded:\n\n'+failed.join('\n'));
 }
 function showProgress(t){
